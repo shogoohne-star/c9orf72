@@ -1,9 +1,18 @@
 # =============================================================================
-#  IEDDA テンプレート連結シミュレーション v17
+#  IEDDA テンプレート連結シミュレーション v18
 #  ―― C9orf72 (C4G2)n 標的・7-deaza-G C7 リンカー型 ASO の鋳型上ライゲーション
 #
 #  Google Colab にそのまま貼り付けて実行してください。
 #  ランタイム: 標準 CPU で 20-35 分 (QUICK=True なら 4-7 分)
+#
+#  v18 の追加: アンカー方式を切り替えられるようにした
+#   ANCHOR_MODE = "base"     7-deaza-G の C7 からリンカー（v17 の設計）
+#                            -> A 型主溝の中にアームを押し込むことになる
+#   ANCHOR_MODE = "terminal" ASO 末端 C の 5'/3'-OH からリン酸ジエステル経由
+#                            -> ニックの外側、溶媒に開いた側にアームが出る
+#  末端型では ASO 1 本が両末端にハンドルを持ち、接合部で
+#  「ASO_A の 3' 末端」と「ASO_B の 5' 末端」が反応する。
+#  ギャップ g（ASO 間の未占有テンプレート塩基数）を走査できる。
 #
 # -----------------------------------------------------------------------------
 #  v16 からの主な変更点（なぜ変えたかは README セクション参照）
@@ -76,9 +85,13 @@ QUICK = False          # True にすると粗いサンプリングで数分で�
 
 # --- 標的・設計 -------------------------------------------------------------
 ASO_SEQ        = "CGGGGC"   # ASO (5'->3')。鋳型は (C4G2)n アンチセンス反復
-MOD_POSITIONS  = (2, 5)     # 修飾する塩基の ASO 内 1-based 位置（どちらも G）
+ANCHOR_MODE    = "terminal" # "terminal" (末端 5'/3'-OH のリン酸経由) / "base" (7-deaza-G C7)
+MOD_POSITIONS  = (2, 5)     # base モードのみ: 修飾する塩基の ASO 内 1-based 位置
+GAPS_NT        = [0, 1, 2, 3, 4]   # terminal モード: ASO 間の未占有テンプレート塩基数
 N_FLANK_BP     = 3          # 構築する二重鎖の両端に足す余分な塩基対
-DELTA_SCAN     = [2, 3, 4, 5, 6]   # 反応する 2 ハンドル間の鎖内 nt 間隔の走査
+NICK_OPEN_SCAN = [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (1.5, 0.0), (0.0, 15.0), (1.0, 15.0)]
+                            # terminal / gap 0 用: ニックの (軸方向の開き Å, ロール °)。
+                            # ニックは二重鎖で最も柔らかい点なので、剛体固定は最悪条件になる。
 TEMP_C         = 37.0       # 温度 (°C)
 
 # --- 構造ソース -------------------------------------------------------------
@@ -89,10 +102,17 @@ HARVEST_PDB_IDS = ["1QC0", "1QCU", "157D", "397D", "280D", "1SDR", "353D", "1RNA
 PDB_LOCAL_FILES = []        # ネットが無い環境用: ローカル .pdb のパスを入れる
 
 # --- アーム分子 -------------------------------------------------------------
-# 三重結合クリック後の 1,2,3-トリアゾール経由。トリアゾール C4 上のメチル基が
-# 7-deaza-G の C7 に置き換わる（= キャップ原子を C7 位置に重ねる）
-SMI_TZ = "Cc1cn(C(C)CCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"      # テトラジン側
-SMI_CP = "Cc1cn(CCNC(=O)OCC2C=C2C)nn1"                      # シクロプロペン側
+#  base モード: トリアゾール C4 上のメチル基が 7-deaza-G の C7 に置き換わる
+SMI_TZ_BASE = "Cc1cn(C(C)CCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
+SMI_CP_BASE = "Cc1cn(CCNC(=O)OCC2C=C2C)nn1"
+#  terminal モード: 先頭のメチル基が RNA の C3'/C5' に置き換わり、続く O が
+#  そのまま O3'/O5' になる。すなわち
+#    5'/3'-OH - P(=O)(O-) - O - CH2 - triazole - (CH2)3 - NH - CH2 - C6H4 - tetrazine
+#    5'/3'-OH - P(=O)(O-) - O - CH2 - triazole - (CH2)2 - CO - NH - CH2 - cyclopropene
+SMI_TZ_TERM = "COP(=O)([O-])OCc1cn(CCCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
+SMI_CP_TERM = "COP(=O)([O-])OCc1cn(CCC(=O)NCC2C=C2C)nn1"
+SMI_TZ = SMI_TZ_TERM if ANCHOR_MODE == "terminal" else SMI_TZ_BASE
+SMI_CP = SMI_CP_TERM if ANCHOR_MODE == "terminal" else SMI_CP_BASE
 
 N_CONFS      = 2500 if not QUICK else 300
 PRUNE_RMS    = 0.4
@@ -111,7 +131,7 @@ KCAL = 0.0019872041           # R (kcal/mol/K)
 IONIC_M       = 0.15          # 塩濃度 (M)
 DIELECTRIC    = 78.0
 AMINE_CHARGE  = +1.0          # プロトン化 2 級アミン
-PHOS_O_CHARGE = -0.5          # OP1 / OP2 それぞれ
+PHOS_O_CHARGE = -0.5          # OP1 / OP2 それぞれ（RNA 骨格・リンカーのリン酸とも）
 LJ_CUTOFF     = 9.0
 LJ_KMAX       = 48            # KD-tree で拾う近傍数
 E_CLAMP       = 15.0          # 最良配置に対する相互作用エネルギーの上限 (kcal/mol)
@@ -141,8 +161,10 @@ NAC_MAIN   = "medium"
 WMODES     = ("steric", "unif", "boltz")
 WMODE_MAIN = "boltz"
 WMODE_GEOM = "steric"
-E_ALLOW      = 5.0    # kcal/mol : 最良配置からこの範囲を「立体的に許される」とみなす
-E_ALLOW_PAIR = 3.0    # kcal/mol : アーム同士の許容相互作用
+#  「立体的に許される」は最良配置からの相対値ではなく絶対的な反発量で判定する。
+#  相対判定だと、たまたま強く結合した 1 配置が基準になって全体が締め出される。
+E_STERIC_MAX  = 4.0   # kcal/mol : RNA との反発（引力を含めない）の許容上限
+E_STERIC_PAIR = 3.0   # kcal/mol : アーム同士の反発の許容上限
 CLASH_HARD   = 2.0    # Å : これより近い重原子接触があれば即座に棄却（高速化も兼ねる）
 RUN_SENSITIVITY = True
 R_FREE     = 6.0     # 非鋳型参照系の球半径 (Å)
@@ -155,7 +177,7 @@ KAPPA = 0.329 * math.sqrt(IONIC_M)      # Debye 遮蔽 (1/Å) @25°C 近似
 TO_M  = 1660.5391                        # 1 molecule/Å^3 -> M
 
 print("=" * 92)
-print("  IEDDA テンプレート連結シミュレーション v17")
+print("  IEDDA テンプレート連結シミュレーション v18")
 print("=" * 92)
 print(f"  RDKit {Chem.rdBase.rdkitVersion} / T = {TEMP_C:.0f} °C / QUICK = {QUICK}")
 print(f"  標的: ASO 5'-{ASO_SEQ}-3' x2 (修飾 {MOD_POSITIONS}) on (C4G2)n")
@@ -476,9 +498,10 @@ class Duplex:
     """strand I (ASO 鎖) と strand II (鋳型鎖) からなる正則 A 型二重鎖"""
     __slots__ = ("res1", "res2", "atoms", "elems", "charges", "nbp")
 
-def build_duplex(seq1, step_list, tmpl, nick_after=None, deaza_pos=(), rng=None):
+def build_duplex(seq1, step_list, tmpl, nophos1=(), deaza_pos=(), drop1=(), rng=None):
     """seq1: strand I の 5'->3' 配列。step_list: 使用するステップ変換のリスト
-       nick_after: strand I の 1-based 位置。この後ろでリン酸を落とす（ニック）
+       nophos1: strand I のこの 1-based 位置からリン酸を外す（ニック / ASO の 5' 末端）
+       drop1:   strand I のこの 1-based 位置の残基を丸ごと消す（ギャップ）
        deaza_pos: 7-deaza 化する strand I の 1-based 位置（N7 -> C7）"""
     nbp = len(seq1)
     F = [(np.zeros(3), np.eye(3))]
@@ -501,18 +524,23 @@ def build_duplex(seq1, step_list, tmpl, nick_after=None, deaza_pos=(), rng=None)
         dx.res1.append(dict(base=b1, atoms={n: x for n, x in zip(names1, X1)}, pos=k + 1))
         dx.res2.append(dict(base=b2, atoms={n: x for n, x in zip(names2, X2)}, pos=k + 1))
 
-    # 末端 / ニックのリン酸を落とす
+    # ギャップ: strand I の残基を丸ごと除く（鋳型鎖はそのまま残す）
+    if drop1:
+        dx.res1 = [r for r in dx.res1 if r["pos"] not in set(drop1)]
+    # 末端 / ニック / ASO 5' 末端のリン酸を落とす
     for strand in (dx.res1, dx.res2):
         for a in ("P", "OP1", "OP2"):
             strand[0]["atoms"].pop(a, None)
-    if nick_after is not None and 1 <= nick_after < nbp:
-        for a in ("P", "OP1", "OP2"):
-            dx.res1[nick_after]["atoms"].pop(a, None)
+    keep1 = {r["pos"]: r for r in dx.res1}
+    for pos in set(nophos1) | {r["pos"] for r in dx.res1 if r["pos"] - 1 not in keep1}:
+        if pos in keep1:
+            for a in ("P", "OP1", "OP2"):
+                keep1[pos]["atoms"].pop(a, None)
 
     # 7-deaza 化（N7 を C7 に置換）
     for p in deaza_pos:
-        r = dx.res1[p - 1]
-        if "N7" in r["atoms"]:
+        r = keep1.get(p)
+        if r is not None and "N7" in r["atoms"]:
             r["atoms"]["C7"] = r["atoms"].pop("N7")
     return dx
 
@@ -579,12 +607,14 @@ def refine_duplex(dx, w_pos=0.6, w_bond=6.0, w_ang=2.0, w_clash=4.0):
         idx_of[(0 if i < n1 else 1, r["pos"])] = i
 
     links = []   # (i_donor(O3'), i_acceptor(P))
-    for k in range(n1 - 1):
-        if "P" in dx.res1[k + 1]["atoms"]:
-            links.append((idx_of[(0, k + 1)], idx_of[(0, k + 2)]))
+    for k in range(len(dx.res1) - 1):
+        a, b = dx.res1[k], dx.res1[k + 1]
+        if b["pos"] == a["pos"] + 1 and "P" in b["atoms"]:
+            links.append((idx_of[(0, a["pos"])], idx_of[(0, b["pos"])]))
     for k in range(len(dx.res2) - 1):
-        if "P" in dx.res2[k]["atoms"]:
-            links.append((idx_of[(1, k + 2)], idx_of[(1, k + 1)]))
+        a, b = dx.res2[k + 1], dx.res2[k]
+        if "P" in b["atoms"]:
+            links.append((idx_of[(1, a["pos"])], idx_of[(1, b["pos"])]))
     pos_of = [{n: t for t, n in enumerate(nm)} for nm in names]
 
     # 残基間の近すぎる非結合接触（テンプレート合成で生じる 2.3 Å 級の重なり）を解く
@@ -653,14 +683,16 @@ def refine_duplex(dx, w_pos=0.6, w_bond=6.0, w_ang=2.0, w_clash=4.0):
 def duplex_quality(dx):
     ds = []
     for k in range(len(dx.res1) - 1):
-        if "P" in dx.res1[k + 1]["atoms"]:
-            ds.append(np.linalg.norm(dx.res1[k]["atoms"]["O3'"] - dx.res1[k + 1]["atoms"]["P"]))
+        a, b = dx.res1[k], dx.res1[k + 1]
+        if b["pos"] == a["pos"] + 1 and "P" in b["atoms"]:
+            ds.append(np.linalg.norm(a["atoms"]["O3'"] - b["atoms"]["P"]))
     for k in range(len(dx.res2) - 1):
         if "P" in dx.res2[k]["atoms"]:
             ds.append(np.linalg.norm(dx.res2[k + 1]["atoms"]["O3'"] - dx.res2[k]["atoms"]["P"]))
     WCA = {"G": ("N1", "N3"), "A": ("N1", "N3"), "C": ("N3", "N1"), "U": ("N3", "N1")}
-    wc = [np.linalg.norm(dx.res1[k]["atoms"][WCA[dx.res1[k]["base"]][0]] -
-                         dx.res2[k]["atoms"][WCA[dx.res1[k]["base"]][1]]) for k in range(dx.nbp)]
+    by2 = {r["pos"]: r for r in dx.res2}
+    wc = [np.linalg.norm(r["atoms"][WCA[r["base"]][0]] - by2[r["pos"]]["atoms"][WCA[r["base"]][1]])
+          for r in dx.res1 if r["pos"] in by2]
     X, E, Q, TAG = duplex_arrays(dx)
     tr = cKDTree(X)
     bad = sum(1 for i, j in tr.query_pairs(2.4)
@@ -677,7 +709,9 @@ P_CPS  = Chem.MolFromSmarts("[#6]1=[#6][#6]1")                    # シクロプ
 P_TRI  = Chem.MolFromSmarts("[#6]1~[#6]~[#7]~[#7]~[#7]1")         # 1,2,3-トリアゾール
 P_AMIN = Chem.MolFromSmarts("[NX3;H1;!$(N[C,S]=[O,S,N]);!$(N~[#7,#8])]")  # プロトン化 2 級アミン
 
-V2_TORSION = 2.0   # kcal/mol : C7-トリアゾール結合の 2 回対称ねじれ障壁（共平面が有利）
+#  base モードのみ: C7-トリアゾール結合の 2 回対称ねじれ障壁（共平面が有利）。
+#  terminal モードでは軸が C3'-O3' / C5'-O5'（= ε / β 二面角）なので 0 にして一様に振る。
+V2_TORSION = 0.0 if ANCHOR_MODE == "terminal" else 2.0
 
 class Arm:
     pass
@@ -709,20 +743,36 @@ def build_arm(smi, label):
     a.mol, a.label, a.pos, a.Econf = mol, label, P, Ek
     a.wconf = np.exp(-(Ek - Ek.min()) / RT)
 
-    # C7 に置き換わるキャップ（トリアゾール上のメチル基）とその結合先
+    # RNA 側の原子の代役になる「キャップ」を同定する。
+    #   base     : トリアゾール上のメチル C が 7-deaza-G の C7 の代役
+    #   terminal : リン酸の架橋 O に 1 本だけ付いたメチル C が C3'/C5' の代役、
+    #              その O がそのまま O3'/O5' になる
     tri = set(mol.GetSubstructMatch(P_TRI))
     cap = None
-    for at in mol.GetAtoms():
-        if at.GetSymbol() != "C" or at.GetIdx() in tri:
-            continue
-        hv = [n for n in at.GetNeighbors() if n.GetAtomicNum() > 1]
-        if len(hv) == 1 and hv[0].GetIdx() in tri and hv[0].GetSymbol() == "C":
-            cap = (at.GetIdx(), hv[0].GetIdx()); break
-    if cap is None:
-        raise RuntimeError(f"{label}: C7 結合点（トリアゾールのメチル）が同定できません")
+    if ANCHOR_MODE == "terminal":
+        for at in mol.GetAtoms():
+            if at.GetSymbol() != "C":
+                continue
+            hv = [n for n in at.GetNeighbors() if n.GetAtomicNum() > 1]
+            if (len(hv) == 1 and hv[0].GetSymbol() == "O"
+                    and any(x.GetSymbol() == "P" for x in hv[0].GetNeighbors())):
+                cap = (at.GetIdx(), hv[0].GetIdx()); break
+        if cap is None:
+            raise RuntimeError(f"{label}: 末端リン酸の結合点が同定できません")
+        a.tri_ref = [n.GetIdx() for n in mol.GetAtomWithIdx(cap[1]).GetNeighbors()
+                     if n.GetSymbol() == "P"][0]
+    else:
+        for at in mol.GetAtoms():
+            if at.GetSymbol() != "C" or at.GetIdx() in tri:
+                continue
+            hv = [n for n in at.GetNeighbors() if n.GetAtomicNum() > 1]
+            if len(hv) == 1 and hv[0].GetIdx() in tri and hv[0].GetSymbol() == "C":
+                cap = (at.GetIdx(), hv[0].GetIdx()); break
+        if cap is None:
+            raise RuntimeError(f"{label}: C7 結合点（トリアゾールのメチル）が同定できません")
+        a.tri_ref = [n.GetIdx() for n in mol.GetAtomWithIdx(cap[1]).GetNeighbors()
+                     if n.GetIdx() in tri][0]
     a.cap = cap
-    a.tri_ref = [n.GetIdx() for n in mol.GetAtomWithIdx(cap[1]).GetNeighbors()
-                 if n.GetIdx() in tri][0]
 
     # 反応部位
     if mol.HasSubstructMatch(P_TZS):
@@ -741,6 +791,8 @@ def build_arm(smi, label):
 
     # 立体判定に使う重原子（キャップ = C7 は RNA 側の原子なので除く）
     drop = {cap[0]} | {n.GetIdx() for n in mol.GetAtomWithIdx(cap[0]).GetNeighbors() if n.GetAtomicNum() == 1}
+    if ANCHOR_MODE == "terminal":
+        drop.add(cap[1])          # 架橋 O は RNA の O3'/O5' そのものなので二重計上しない
     a.heavy = [x.GetIdx() for x in mol.GetAtoms() if x.GetAtomicNum() > 1 and x.GetIdx() not in drop]
     a.rmin = np.array([RMIN2.get(mol.GetAtomWithIdx(i).GetSymbol(), 2.0) for i in a.heavy])
     a.eps  = np.array([EPS.get(mol.GetAtomWithIdx(i).GetSymbol(), 0.12) for i in a.heavy])
@@ -756,10 +808,17 @@ def build_arm(smi, label):
     for (n,) in mol.GetSubstructMatches(P_AMIN):
         if n in hmap:
             q[hmap[n]] = AMINE_CHARGE
+    for at in mol.GetAtoms():          # リン酸ジエステルは -1（非架橋 O に -0.5 ずつ）
+        if at.GetSymbol() != "P":
+            continue
+        for o in at.GetNeighbors():
+            if o.GetSymbol() == "O" and len([x for x in o.GetNeighbors() if x.GetAtomicNum() > 1]) == 1:
+                if o.GetIdx() in hmap:
+                    q[hmap[o.GetIdx()]] = PHOS_O_CHARGE
     a.q = q
     print(f"  [{label}] {Chem.rdMolDescriptors.CalcMolFormula(Chem.MolFromSmiles(smi))}  "
           f"配座 {len(cids)} -> 採用 {len(keep)} (E <= {E_WINDOW:.0f} kcal/mol)  "
-          f"重原子 {len(a.heavy)}  正電荷 {int((q > 0).sum())}")
+          f"重原子 {len(a.heavy)}  形式電荷 {q.sum():+.1f}")
     return a
 
 def rot_between(a, b):
@@ -792,18 +851,18 @@ def softcore(E):
     return np.where(E > 0, LJ_REP_CAP * E / (E + LJ_REP_CAP), E)
 
 def _lj_energy(Xh, rmin_a, eps_a, tree, rmin_r, eps_r, block=400):
-    """アーム配置 (M, na, 3) と RNA の Lennard-Jones 相互作用エネルギー (M,)
+    """アーム配置 (M, na, 3) と RNA の LJ 相互作用。(全エネルギー, 反発成分のみ) を返す。
        まず最近接 1 点だけ調べて明白な衝突を落とし、残りだけ本計算する"""
     M, na, _ = Xh.shape
-    out = np.zeros(M)
+    out = np.zeros(M); rep = np.zeros(M)
     n_rna = len(rmin_r)
     d1, _i1 = tree.query(Xh.reshape(-1, 3), k=1, workers=-1)
     hard = (d1.reshape(M, na) < CLASH_HARD).any(axis=1)
-    out[hard] = 1e4
+    out[hard] = 1e4; rep[hard] = 1e4
     keep = np.where(~hard)[0]
     Xh = Xh[keep]
     M = len(keep)
-    sub = np.zeros(M)
+    sub = np.zeros(M); subr = np.zeros(M)
     for s in range(0, M, block):
         e = min(s + block, M)
         flat = Xh[s:e].reshape(-1, 3)
@@ -818,8 +877,9 @@ def _lj_energy(Xh, rmin_a, eps_a, tree, rmin_r, eps_r, block=400):
         ev = np.clip(ep * (x * x - 2.0 * x), -5.0, 1e6)
         ev = softcore(ev)
         sub[s:e] = np.where(ok, ev, 0.0).sum(axis=(1, 2))
-    out[keep] = sub
-    return out
+        subr[s:e] = np.where(ok, np.maximum(ev, 0.0), 0.0).sum(axis=(1, 2))
+    out[keep] = sub; rep[keep] = subr
+    return out, rep
 
 def _dh_energy(Xh, q_a, Xq_r, q_r):
     """Debye-Huckel 静電（プロトン化アミン <-> リン酸酸素）"""
@@ -864,7 +924,7 @@ def place_arm(arm, anchor, direction, ref_atom, rna):
     nc, nt = B.shape[0], N_TORSION
     wconf = np.repeat(arm.wconf, nt)
 
-    E = _lj_energy(Xh, arm.rmin, arm.eps, rna["tree"], rna["rmin"], rna["eps"])
+    E, Erep = _lj_energy(Xh, arm.rmin, arm.eps, rna["tree"], rna["rmin"], rna["eps"])
     E = E + _dh_energy(Xh, arm.q, rna["xq"], rna["q"])
     # C7-トリアゾール結合まわりのねじれポテンシャル（共平面が有利）
     phi = dihedral_batch(np.broadcast_to(ref_atom, (len(C), 3)),
@@ -877,7 +937,8 @@ def place_arm(arm, anchor, direction, ref_atom, rna):
     bf = np.exp(-dE / RT)
     pl = Placement()
     pl.arm, pl.X, pl.E = arm, Xh, E
-    pl.W = {"boltz": wconf * bf, "unif": bf, "steric": (dE <= E_ALLOW).astype(float)}
+    pl.W = {"boltz": wconf * bf, "unif": bf,
+            "steric": (Erep <= E_STERIC_MAX).astype(float)}
     w = pl.W["boltz"]
     ring = [hmap[i] for i in arm.ring]
     R3 = Xh[:, ring, :]
@@ -894,6 +955,7 @@ def place_arm(arm, anchor, direction, ref_atom, rna):
     pl.freedom = float((w.sum() ** 2 / (w ** 2).sum()) / len(w))
     pl.occupancy = float(bf.mean())                 # 自由な状態に対する相対分配関数
     pl.allowed = float(pl.W["steric"].mean())       # 立体的に許される配置の割合
+    pl.Erep = Erep
     pl.Emin = float(E.min())
     pl.n = len(E)
     return pl
@@ -924,14 +986,16 @@ def interarm_pars(armA, armB):
     return rm, ep
 
 def interarm_E(A, B, rm, ep, block=20000):
-    """反応配座での 2 本のアーム同士の相互作用エネルギー。A,B は (n, k, 3)"""
-    out = np.empty(len(A))
+    """反応配座での 2 本のアーム同士の (全相互作用, 反発成分のみ)。A,B は (n, k, 3)"""
+    out = np.empty(len(A)); rep = np.empty(len(A))
     for s in range(0, len(A), block):
         e = min(s + block, len(A))
         D = np.linalg.norm(A[s:e][:, :, None, :] - B[s:e][:, None, :, :], axis=-1)
         x = (rm[None] / np.maximum(D, 0.7)) ** 6
-        out[s:e] = softcore(np.clip(ep[None] * (x * x - 2 * x), -5.0, 1e6)).sum(axis=(1, 2))
-    return np.minimum(out, E_CLAMP)
+        ev = softcore(np.clip(ep[None] * (x * x - 2 * x), -5.0, 1e6))
+        out[s:e] = ev.sum(axis=(1, 2))
+        rep[s:e] = np.maximum(ev, 0.0).sum(axis=(1, 2))
+    return np.minimum(out, E_CLAMP), rep
 
 # =============================================================================
 #  Part 3  非鋳型（自由溶液）参照系と、実効モル濃度 EM
@@ -999,10 +1063,10 @@ def free_reference(arm_tz, arm_cp, n_mc=None, chunk=400_000):
             continue
         A = np.einsum("mij,maj->mai", RA[sel], gt["inter"][ic[sel]])
         B = np.einsum("mij,maj->mai", RB[sel], gc["inter"][jc[sel]]) + t[sel][:, None, :]
-        Ei = interarm_E(A, B, rm, ep)
+        Ei, Eir = interarm_E(A, B, rm, ep)
         fac = {"boltz": wt[sel] * wc[sel] * np.exp(-Ei / RT),
                "unif": np.exp(-Ei / RT),
-               "steric": (Ei <= E_ALLOW_PAIR).astype(float)}
+               "steric": (Eir <= E_STERIC_PAIR).astype(float)}
         for lv in NAC_LEVELS:
             mk = nac_mask(Q[sel], N[sel], Ct1[sel], Ct2[sel], Ca[sel], Cb[sel], Mn[sel], lv)
             for wm in WMODES:
@@ -1038,10 +1102,10 @@ def pair_EM(plA, plB, f_free, block=1500):
         n_nac += len(sel)
         A = plA.X[ia[sel]][:, plA.arm.inter, :]
         B = plB.X[ib[sel]][:, plB.arm.inter, :]
-        Ei = interarm_E(A, B, rm, ep)
+        Ei, Eir = interarm_E(A, B, rm, ep)
         masks = {lv: nac_mask(Q[sel], N[sel], Ct1[sel], Ct2[sel], Ca[sel], Cb[sel], Mn[sel], lv)
                  for lv in NAC_LEVELS}
-        good = masks[NAC_MAIN] & (Ei <= E_ALLOW_PAIR)
+        good = masks[NAC_MAIN] & (Eir <= E_STERIC_PAIR)
         if good.any():
             strain = (plA.E[ia[sel]] - plA.E.min()) + (plB.E[ib[sel]] - plB.E.min()) + np.maximum(Ei, 0)
             g = np.where(good)[0]
@@ -1053,7 +1117,7 @@ def pair_EM(plA, plB, f_free, block=1500):
                             np.linalg.norm(Ct2[sel] - Cb[sel], axis=1))
             d_best = min(d_best, float(dd[g].min()))
         fac = {"boltz": np.exp(-Ei / RT), "unif": np.exp(-Ei / RT),
-               "steric": (Ei <= E_ALLOW_PAIR).astype(float)}
+               "steric": (Eir <= E_STERIC_PAIR).astype(float)}
         for wm in WMODES:
             wp = plA.W[wm][ia[sel]] * plB.W[wm][ib[sel]] * fac[wm]
             for lv in NAC_LEVELS:
@@ -1063,7 +1127,8 @@ def pair_EM(plA, plB, f_free, block=1500):
         Z = plA.W[wm].sum() * plB.W[wm].sum()
         for lv in NAC_LEVELS:
             ff = f_free[wm][lv]
-            out[wm][lv] = ((num[wm][lv] / Z) / (ff * V_FREE)) * TO_M if (ff > 0 and Z > 0) else np.nan
+            # Z = 0 は「立体的に許される配置が 1 つも無い」= 到達不能なので 0 とする
+            out[wm][lv] = ((num[wm][lv] / Z) / (ff * V_FREE)) * TO_M if (ff > 0 and Z > 0) else 0.0
     return out, dict(n_cand=n_cand, n_nac=n_nac, d_min=d_best, e_strain=e_best, xyz=best_xyz)
 
 # =============================================================================
@@ -1072,32 +1137,88 @@ def pair_EM(plA, plB, f_free, block=1500):
 
 L_ASO = len(ASO_SEQ)
 
-def make_system(step_pool, tmpl, design, rl):
-    """design = (p, q): ASO 内の修飾位置。反応対は ASO_A の q と ASO_B の p。
-       接合部越えの間隔 Δ = L - q + p"""
-    p, q = design
+def res1_at(dx, pos):
+    for r in dx.res1:
+        if r["pos"] == pos:
+            return r
+    raise KeyError(pos)
+
+def perturb_step(step, d_rise=0.0, d_roll=0.0):
+    """ステップ変換に軸方向の開き（rise）とロールを足す（ニックの緩みの表現）"""
+    R, t = step
+    if d_roll:
+        R = R @ rot_axis(np.array([1.0, 0.0, 0.0]), math.radians(d_roll))
+    return R, t + np.array([0.0, 0.0, d_rise])
+
+def make_system(step_pool, tmpl, design, rl, nick_open=(0.0, 0.0)):
+    """base モード: design = (p, q) 修飾塩基位置。反応対は ASO_A の q と ASO_B の p。
+       terminal モード: design = gap (ASO 間の未占有テンプレート塩基数)。
+       反応対は ASO_A の 3' 末端 (Tz) と ASO_B の 5' 末端 (Cp)。"""
     F = N_FLANK_BP
-    total = 2 * F + 2 * L_ASO
-    seq = "".join(ASO_SEQ[(i - F) % L_ASO] for i in range(total))
-    gA = lambda k: F + k
-    gB = lambda k: F + L_ASO + k
-    deaza = (gA(p), gA(q), gB(p), gB(q))
+    if ANCHOR_MODE == "terminal":
+        g = int(design)
+        total = 2 * F + 2 * L_ASO + g
+        seq = "".join(ASO_SEQ[(i - F) % L_ASO] for i in range(total))
+        a0, a1 = F + 1, F + L_ASO                       # ASO_A (Tz)
+        b0, b1 = F + L_ASO + g + 1, F + 2 * L_ASO + g   # ASO_B (Cp)
+        drop1 = tuple(range(a1 + 1, b0))                # ギャップ（鋳型鎖だけ残す）
+        nophos1 = (a0, b0, b1 + 1)                      # 各 ASO 断片の 5' 末端を遊離 OH に
+        deaza = ()
+        info = dict(seq=seq, gap=g, tz_react=("3", a1), cp_react=("5", b0),
+                    tz_bys=("5", a0), cp_bys=("3", b1),
+                    aso_a=(a0, a1), aso_b=(b0, b1), delta=None)
+    else:
+        p, q = design
+        g = 0
+        total = 2 * F + 2 * L_ASO
+        seq = "".join(ASO_SEQ[(i - F) % L_ASO] for i in range(total))
+        gA = lambda k: F + k
+        gB = lambda k: F + L_ASO + k
+        drop1, nophos1 = (), (F + L_ASO + 1,)
+        deaza = (gA(p), gA(q), gB(p), gB(q))
+        info = dict(seq=seq, gap=0, tz_react=("base", gA(q)), cp_react=("base", gB(p)),
+                    tz_bys=("base", gA(p)), cp_bys=("base", gB(q)),
+                    aso_a=(gA(1), gA(L_ASO)), aso_b=(gB(1), gB(L_ASO)),
+                    delta=L_ASO - q + p)
     idx = rl.integers(0, len(step_pool), total - 1)
-    dx = build_duplex(seq, [step_pool[i] for i in idx], tmpl,
-                      nick_after=F + L_ASO, deaza_pos=deaza)
+    steps = [step_pool[i] for i in idx]
+    if ANCHOR_MODE == "terminal" and any(nick_open):
+        k = info["tz_react"][1] - 1        # ASO_A の 3' 末端から次の残基へのステップ
+        if 0 <= k < len(steps):
+            steps[k] = perturb_step(steps[k], *nick_open)
+    dx = build_duplex(seq, steps, tmpl, nophos1=nophos1, deaza_pos=deaza, drop1=drop1)
     refine_duplex(dx)
-    info = dict(seq=seq, tz_react=gA(q), cp_react=gB(p),
-                tz_bys=gA(p), cp_bys=gB(q), delta=L_ASO - q + p)
     return dx, info
 
-def anchor_of(dx, pos):
-    r = dx.res1[pos - 1]
-    C7, u = exocyclic_C7_dir(r)
-    return C7, u, r["atoms"]["C8"]
+def nick_distance(dx, info):
+    """ASO_A の 3'-OH と ASO_B の 5'-OH の距離（通常のホスホジエステルなら 2.6-2.8 Å）"""
+    try:
+        return float(np.linalg.norm(res1_at(dx, info["tz_react"][1])["atoms"]["O3'"] -
+                                    res1_at(dx, info["cp_react"][1])["atoms"]["O5'"]))
+    except KeyError:
+        return np.nan
 
-def rna_env(dx, host_pos, extra=None):
-    excl = {(0, host_pos, a) for a in ("N9", "C8", "C7", "N7", "C5", "C4")}
-    X, E, Q, TAG = duplex_arrays(dx, exclude=excl)
+def anchor_of(dx, spec):
+    """(位置, 置換基が生える向き, ねじれ角の基準原子) を返す"""
+    kind, pos = spec
+    r = res1_at(dx, pos)
+    if kind == "base":
+        C7, u = exocyclic_C7_dir(r)
+        return C7, u, r["atoms"]["C8"]
+    a = r["atoms"]
+    c, o = (a["C3'"], a["O3'"]) if kind == "3" else (a["C5'"], a["O5'"])
+    u = o - c
+    return c, u / np.linalg.norm(u), a["C4'"]
+
+def env_exclusions(spec):
+    """アームが RNA 側の原子を二重に持っている分を tree から除く"""
+    kind, pos = spec
+    names = {"base": ("N9", "C8", "C7", "N7", "C5", "C4"),
+             "3": ("C3'", "O3'"), "5": ("C5'", "O5'")}[kind]
+    return {(0, pos, n) for n in names}
+
+def rna_env(dx, spec, extra=None):
+    X, E, Q, TAG = duplex_arrays(dx, exclude=env_exclusions(spec))
     if extra:
         X = np.vstack([X] + [e[0] for e in extra])
         E = np.concatenate([E] + [e[1] for e in extra])
@@ -1110,16 +1231,16 @@ def rna_env(dx, host_pos, extra=None):
 def arm_elements(arm):
     return np.array([arm.mol.GetAtomWithIdx(i).GetSymbol() for i in arm.heavy])
 
-def bystander_ensemble(dx, pos, arm):
-    C7, u, C8 = anchor_of(dx, pos)
-    return place_arm(arm, C7, u, C8, rna_env(dx, pos))
+def bystander_ensemble(dx, spec, arm):
+    a, u, ref = anchor_of(dx, spec)
+    return place_arm(arm, a, u, ref, rna_env(dx, spec))
 
 def _eval_once(dx, info, arm_tz, arm_cp, f_free, extra):
     aT = anchor_of(dx, info["tz_react"]); aC = anchor_of(dx, info["cp_react"])
     plT = place_arm(arm_tz, aT[0], aT[1], aT[2], rna_env(dx, info["tz_react"], extra))
     plC = place_arm(arm_cp, aC[0], aC[1], aC[2], rna_env(dx, info["cp_react"], extra))
     em, stat = pair_EM(plT, plC, f_free)
-    return dict(EM=em, d77=float(np.linalg.norm(aT[0] - aC[0])),
+    return dict(EM=em, d77=float(np.linalg.norm(aT[0] - aC[0])), gap=info["gap"],
                 allowT=plT.allowed, allowC=plC.allowed,
                 occT=plT.occupancy, occC=plC.occupancy,
                 EminT=plT.Emin, EminC=plC.Emin,
@@ -1269,10 +1390,18 @@ assert F_FREE[WMODE_MAIN][NAC_MAIN] > 0, "参照系で NAC が 1 つも出ませ
 print()
 import time
 
-PURINE_POS = [i + 1 for i, c in enumerate(ASO_SEQ) if c in PURINES]
-DESIGNS = [(p, q) for p in PURINE_POS for q in PURINE_POS if p < q]
-MAIN_DESIGN = tuple(MOD_POSITIONS)
-assert MAIN_DESIGN in DESIGNS, f"修飾位置 {MOD_POSITIONS} はプリンではありません（使用可: {PURINE_POS}）"
+if ANCHOR_MODE == "terminal":
+    DESIGNS = list(GAPS_NT)
+    MAIN_DESIGN = 0                     # 0 ギャップ（ニックで隣接）が本命
+    def design_label(d):
+        return f"gap {d} nt"
+else:
+    PURINE_POS = [i + 1 for i, c in enumerate(ASO_SEQ) if c in PURINES]
+    DESIGNS = [(p, q) for p in PURINE_POS for q in PURINE_POS if p < q]
+    MAIN_DESIGN = tuple(MOD_POSITIONS)
+    assert MAIN_DESIGN in DESIGNS, f"修飾位置 {MOD_POSITIONS} はプリンではありません（{PURINE_POS}）"
+    def design_label(d):
+        return f"(p,q)={d} Δ={L_ASO - d[1] + d[0]}nt"
 
 print("=" * 92); print("  [4] 標的配列 A 型二重鎖の構築と検証"); print("=" * 92)
 _rl = np.random.default_rng(SEED + 1)
@@ -1285,16 +1414,24 @@ print(f"    鋳型鎖 3'-{''.join(COMPL[c] for c in _info0['seq'])}-5'   = (C4G2
 print(f"    骨格 O3'-P : {_q['o3p'][0]:.3f} - {_q['o3p'][1]:.3f} Å (理想 1.607)")
 print(f"    WC 水素結合 N1···N3 : {_q['wc'][0]:.2f} - {_q['wc'][1]:.2f} Å")
 print(f"    残基間の近接衝突 (<2.4 Å) : {_q['clashes']} 個")
-print(f"    反応する 2 ハンドル: ASO_A 第{MAIN_DESIGN[1]}位 (pos {_info0['tz_react']}, Tz) と "
-      f"ASO_B 第{MAIN_DESIGN[0]}位 (pos {_info0['cp_react']}, Cp) / 鎖内間隔 Δ = {_info0['delta']} nt")
-print(f"    未反応の傍観ハンドル: pos {_info0['tz_bys']} (Tz), pos {_info0['cp_bys']} (Cp)")
+print(f"    ASO_A (Tz) = pos {_info0['aso_a']}, ASO_B (Cp) = pos {_info0['aso_b']}")
+print(f"    反応する 2 ハンドル: {_info0['tz_react'][0]}' 末端 pos {_info0['tz_react'][1]} (Tz) と "
+      f"{_info0['cp_react'][0]}' 末端 pos {_info0['cp_react'][1]} (Cp)"
+      if ANCHOR_MODE == "terminal" else
+      f"    反応する 2 ハンドル: ASO_A 第{MAIN_DESIGN[1]}位 (pos {_info0['tz_react'][1]}, Tz) と "
+      f"ASO_B 第{MAIN_DESIGN[0]}位 (pos {_info0['cp_react'][1]}, Cp) / 鎖内間隔 Δ = {_info0['delta']} nt")
+print(f"    未反応の傍観ハンドル: {_info0['tz_bys']} (Tz), {_info0['cp_bys']} (Cp)")
+_a0, _u0, _ = anchor_of(_dx0, _info0["tz_react"])
+_c0, _v0, _ = anchor_of(_dx0, _info0["cp_react"])
+print(f"    2 つのアンカー原子間の距離: {np.linalg.norm(_a0 - _c0):.2f} Å  "
+      f"（生える向きのなす角 {math.degrees(math.acos(np.clip(np.dot(_u0, _v0), -1, 1))):.0f}°）")
 print()
 
-write_model_pdb("duplex_v17.pdb", _dx0)
-print("    構築した二重鎖を duplex_v17.pdb に保存しました（PyMOL 等で確認できます）")
+write_model_pdb("duplex_v18.pdb", _dx0)
+print("    構築した二重鎖を duplex_v18.pdb に保存しました（PyMOL 等で確認できます）")
 print()
 
-print("=" * 92); print(f"  [5] 実行設計 (p,q) = {MAIN_DESIGN} の実効モル濃度"); print("=" * 92)
+print("=" * 92); print(f"  [5] 実行設計 {design_label(MAIN_DESIGN)} の実効モル濃度"); print("=" * 92)
 print(f"    熱ゆらぎ二重鎖 {N_TEMPLATES} 本 x 傍観アーム有無")
 RES = {True: [], False: []}
 t0 = time.time()
@@ -1310,9 +1447,9 @@ def summarize(rows, label):
     em = np.array([r["EM"][WMODE_MAIN][NAC_MAIN] for r in rows])
     lo, hi = boot_ci(em)
     print(f"\n    --- {label} (n = {len(rows)}) ---")
-    print(f"    C7···C7 距離           : {np.median([r['d77'] for r in rows]):.2f} Å")
-    print(f"    主溝で許される配置の割合: Tz {np.median([r['allowT'] for r in rows])*100:.2f} % / "
-          f"Cp {np.median([r['allowC'] for r in rows])*100:.2f} %  (最良配置 +{E_ALLOW:.0f} kcal/mol 以内)")
+    print(f"    アンカー間距離         : {np.median([r['d77'] for r in rows]):.2f} Å")
+    print(f"    立体的に許される配置    : Tz {np.median([r['allowT'] for r in rows])*100:.2f} % / "
+          f"Cp {np.median([r['allowC'] for r in rows])*100:.2f} %  (RNA との反発 <= {E_STERIC_MAX:.0f} kcal/mol)")
     print(f"    NAC 候補対             : {np.median([r['nnac'] for r in rows]):.0f} / "
           f"{np.median([r['ncand'] for r in rows]):.0f} 対")
     _dm = [r['dmin'] for r in rows if np.isfinite(r['dmin'])]
@@ -1338,19 +1475,56 @@ _cands = [(i, r) for i, r in enumerate(_MAIN_ROWS)
 _bi, _bestrow = min(_cands, key=lambda t: t[1]["strain"]) if _cands else (None, None)
 if _bestrow is not None:
     _dxb, _ = make_system(STEPS_SYM, TMPL, MAIN_DESIGN, np.random.default_rng(SEED + 100 + _bi))
-    write_model_pdb("nac_model_v17.pdb", _dxb,
+    write_model_pdb("nac_model_v18.pdb", _dxb,
                     arms=[(_bestrow["xyz"][0], arm_elements(ARM_TZ), "TZ"),
                           (_bestrow["xyz"][1], arm_elements(ARM_CP), "CP")])
-    print(f"\n    最もひずみの小さい反応配座 (NAC) を nac_model_v17.pdb に保存しました "
+    print(f"\n    最もひずみの小さい反応配座 (NAC) を nac_model_v18.pdb に保存しました "
           f"(ひずみ {_bestrow['strain']:.1f} kcal/mol, 形成結合 {_bestrow['dmin']:.2f} Å)")
 if USE_BYSTANDERS:
     EM_NB, CI_NB, EM_ARR_NB = summarize(RES[False], "傍観ハンドルなし（参考）")
 print()
-print("=" * 92); print("  [6] 修飾位置 (p, q) の走査"); print("=" * 92)
-print(f"    接合部越えの間隔 Δ = {L_ASO} - q + p。ASO 内の 2 つのハンドルは同種なので")
-print(f"    反応するのは常に接合部越えの対のみ。傍観アームは省いた比較（{N_TEMPL_SCAN} 本平均）\n")
+if ANCHOR_MODE == "terminal":
+    print("=" * 92); print("  [5b] ニックの緩みへの感度 (gap 0)"); print("=" * 92)
+    print("    ASO_A の 3'-リンカーと ASO_B の 5'-末端は、本来リン酸 1 個が入る隙間を")
+    print("    奪い合う。ニックは二重鎖で最も柔らかい点なので、剛体固定は最悪条件になる。")
+    print("    ニックを軸方向に開く / ロールさせたときに何が起きるかを見る。\n")
+    _oo = "O3'-O5'"
+    print(f"    {'開き(A)/ロール(deg)':<22s}{_oo:>10s}{'許容 Tz/Cp':>16s}{'ひずみ':>9s}"
+          f"{'EM_steric':>12s}{'EM_boltz':>12s}")
+    NICKSCAN = []
+    for dr, dro in NICK_OPEN_SCAN:
+        rr = []
+        for it in range(min(4, N_TEMPLATES)):
+            rl = np.random.default_rng(SEED + 100 + it)
+            dxs, infos = make_system(STEPS_SYM, TMPL, 0, rl, nick_open=(dr, dro))
+            row = evaluate_system(dxs, infos, ARM_TZ, ARM_CP, F_FREE, bystanders=False)
+            row["oo"] = nick_distance(dxs, infos)
+            rr.append(row)
+        st = [r["strain"] for r in rr if np.isfinite(r["strain"])]
+        NICKSCAN.append((dr, dro, float(np.median([r["oo"] for r in rr])),
+                         float(np.mean([r["EM"][WMODE_GEOM][NAC_MAIN] for r in rr])),
+                         float(np.median([r["EM"][WMODE_MAIN][NAC_MAIN] for r in rr]))))
+        print(f"    {f'{dr:.1f} / {dro:.0f}':<20s}{np.median([r['oo'] for r in rr]):10.2f} "
+              f"{np.median([r['allowT'] for r in rr])*100:6.2f}%/"
+              f"{np.median([r['allowC'] for r in rr])*100:5.1f}%"
+              f"{(np.median(st) if st else np.nan):9.1f}"
+              f"{NICKSCAN[-1][3]:12.2e}{NICKSCAN[-1][4]:12.2e}")
+    print()
+
+print("=" * 92)
+print("  [6] " + ("ASO 間ギャップの走査" if ANCHOR_MODE == "terminal" else "修飾位置 (p, q) の走査"))
+print("=" * 92)
+if ANCHOR_MODE == "terminal":
+    print("    ギャップ g = ASO 2 本の間に残る未占有テンプレート塩基数。")
+    print(f"    ※ 標的が周期 {L_ASO} の反復なので、実際に相補鎖として入れるのは g ≡ 0 (mod {L_ASO}) だけ。")
+    print("       g >= 1 は「リンカーがどこまで距離を稼げるか」を見るための幾何学的な参考値。")
+else:
+    print(f"    接合部越えの間隔 Δ = {L_ASO} - q + p。ASO 内の 2 つのハンドルは同種なので")
+    print("    反応するのは常に接合部越えの対のみ。")
+print(f"    傍観アームは省いた比較（{N_TEMPL_SCAN} 本、[5] と同じ鋳型）\n")
 SCAN = {}
-for design in sorted(DESIGNS, key=lambda d: (L_ASO - d[1] + d[0], d)):
+for design in (DESIGNS if ANCHOR_MODE == "terminal"
+               else sorted(DESIGNS, key=lambda d: (L_ASO - d[1] + d[0], d))):
     rows = []
     for it in range(N_TEMPL_SCAN):
         rl = np.random.default_rng(SEED + 100 + it)   # [5] と同じ鋳型集合で対応づけて比較
@@ -1364,10 +1538,10 @@ for design in sorted(DESIGNS, key=lambda d: (L_ASO - d[1] + d[0], d)):
     st = [r["strain"] for r in rows if np.isfinite(r["strain"])]
     SCAN[design] = dict(em=v, emg=vg, med=float(np.median(v)), medg=float(np.median(vg)),
                         meang=float(np.mean(vg)), frac=float((vg > 0).mean()), ci=(lo, hi),
-                        d77=float(np.median([r["d77"] for r in rows])), delta=rows[0]["delta"],
+                        d77=float(np.median([r["d77"] for r in rows])),
                         strain=float(np.median(st)) if st else np.nan)
     mark = " <-- 今回の設計" if design == MAIN_DESIGN else ""
-    print(f"    (p,q)={design} Δ={rows[0]['delta']}nt  C7···C7 {SCAN[design]['d77']:5.2f} Å  "
+    print(f"    {design_label(design):<16s} アンカー間 {SCAN[design]['d77']:5.2f} Å  "
           f"ひずみ {SCAN[design]['strain']:5.1f} kcal/mol  "
           f"EM_steric>0 の鋳型 {SCAN[design]['frac']*100:3.0f}%  平均 {SCAN[design]['meang']:.2e} M  "
           f"EM_boltz 中央値 {SCAN[design]['med']:.2e} M{mark}")
@@ -1388,14 +1562,21 @@ print("    ※ 修飾（C7 置換基）と標的の高次構造（G4 / ヘアピ
 print()
 
 print("=" * 92); print("  [8] 予測される反応速度"); print("=" * 92)
-K2_LIST   = [1.0, 5.0, 20.0]      # M^-1 s^-1 : 3-メチル-6-アリールテトラジン x 1-メチルシクロプロペン
+# M^-1 s^-1 : 3-メチル-6-アリールテトラジン x 1-メチル-3-アルキルシクロプロペン。
+# 中央値 0.65 は Chem. Eur. J. 2014, doi:10.1002/chem.201304225 Table 1 Entry 2 の報告値。
+K2_LIST   = [0.2, 0.65, 2.0]
 ASO_LIST  = [1e-7, 1e-6, 1e-5]
 F_ACC     = 0.1                    # 標的の高次構造などで実効的に結合できる割合
 K_ON      = 1.0e6
 print(f"    k_on = {K_ON:.0e} M⁻¹s⁻¹, 標的接近可能割合 f_acc = {F_ACC}")
 print(f"    EM は上下 2 通りで評価: EM_steric = {EM_GEOM:.3e} M（幾何学的到達性のみ・楽観側） /")
 print(f"                            EM_boltz  = {EM_MAIN:.3e} M（反応配座のひずみを全部払う・悲観側）")
-print(f"    以下の表は EM_boltz。EM_steric なら速度は約 {EM_GEOM/EM_MAIN if EM_MAIN>0 else float('nan'):.0f} 倍（ただし k_off 律速で頭打ち）")
+if EM_GEOM <= 0:
+    print("    ※ EM_steric = 0: 立体的に許される配置の中に反応配座が 1 つも無い。")
+    print("       下の表は EM_boltz（ひずみを払えば到達できる経路）だけに基づく上限的な見積り。")
+else:
+    print(f"    以下の表は EM_boltz。EM_steric なら速度は約 "
+          f"{EM_GEOM/EM_MAIN if EM_MAIN > 0 else float('inf'):.0f} 倍（ただし k_off 律速で頭打ち）")
 print(f"\n    {'k2':>6s} {'[ASO]':>8s} {'θ(1鎖)':>8s} {'θ_AB':>8s} {'k_off':>10s} {'k_chem':>10s} "
       f"{'速度':>11s} {'半減期':>12s} {'鋳型効果':>10s}")
 KIN = {}
@@ -1454,7 +1635,7 @@ print("=" * 92); print("  [10] 図"); print("=" * 92)
 fig = plt.figure(figsize=(15, 9))
 
 ax = fig.add_subplot(2, 3, 1)
-ds = sorted(SCAN, key=lambda d: (SCAN[d]["delta"], d))
+ds = list(SCAN)
 xs = np.arange(len(ds))
 _pos = [SCAN[d]["meang"] for d in ds if SCAN[d]["meang"] > 0]
 _floor = (min(_pos) / 30.0) if _pos else 1e-9
@@ -1464,9 +1645,11 @@ for i, d in enumerate(ds):
     if SCAN[d]["meang"] <= 0:
         ax.text(i, _floor * 1.3, "0", ha="center", fontsize=8)
 ax.set_ylim(_floor * 0.6, max(med) * 3)
-ax.set_xticks(xs); ax.set_xticklabels([f"{d}\nΔ={SCAN[d]['delta']}\n{SCAN[d]['strain']:.1f}" for d in ds], fontsize=7)
-ax.set_xlabel("(p,q) / Δ / strain to reach NAC (kcal/mol)", fontsize=8)
-ax.set_yscale("log"); ax.set_ylabel("mean EM steric (M)"); ax.set_title("Modification positions (p,q)\nred = current design")
+ax.set_xticks(xs); ax.set_xticklabels([f"{d}\n{SCAN[d]['strain']:.1f}" for d in ds], fontsize=7)
+ax.set_xlabel(("gap (nt) / strain (kcal/mol)" if ANCHOR_MODE == "terminal"
+               else "(p,q) / strain (kcal/mol)"), fontsize=8)
+ax.set_yscale("log"); ax.set_ylabel("mean EM steric (M)"); ax.set_title(("ASO-ASO gap" if ANCHOR_MODE == "terminal" else "Modification positions (p,q)")
+             + "\nred = current design")
 ax.grid(alpha=.3, axis="y")
 
 ax = fig.add_subplot(2, 3, 2)
@@ -1508,7 +1691,7 @@ for k2 in K2_LIST:
 ax.set_xlabel("time (s)"); ax.set_ylabel("ligated junctions (%)")
 ax.set_title(f"Yield at [ASO] = {ASO_LIST[1]*1e6:g} µM"); ax.legend(fontsize=7); ax.grid(alpha=.3, which="both")
 
-plt.tight_layout(); plt.savefig("iedda_v17.png", dpi=150); plt.show()
+plt.tight_layout(); plt.savefig("iedda_v18.png", dpi=150); plt.show()
 
 # =============================================================================
 #  Part 7  まとめと限界
@@ -1516,13 +1699,13 @@ plt.tight_layout(); plt.savefig("iedda_v17.png", dpi=150); plt.show()
 print("=" * 92); print("  [11] まとめ"); print("=" * 92)
 best = min(SCAN, key=lambda d: (SCAN[d]["strain"] if np.isfinite(SCAN[d]["strain"]) else 1e9))
 print(f"""
-  ■ 幾何
-    - 標的 (C4G2)n 上で ASO 2 本が隣接すると、設計 (p,q)={MAIN_DESIGN} の反応対は
-      鎖内 Δ = {L_ASO - MAIN_DESIGN[1] + MAIN_DESIGN[0]} nt 離れ、C7···C7 は {np.median([r['d77'] for r in rows]):.1f} Å。
-    - A 型 RNA の主溝は深く狭く、立体的に許される配置は全配置の
-      {np.median([r['allowT'] for r in rows])*100:.1f} % (Tz) / {np.median([r['allowC'] for r in rows])*100:.1f} % (Cp) しかない。
+  ■ 幾何 ({ANCHOR_MODE} モード)
+    - 設計 {design_label(MAIN_DESIGN)} の反応対のアンカー間距離は {np.median([r['d77'] for r in rows]):.1f} Å。
+    - 立体的に許される配置は全配置の
+      {np.median([r['allowT'] for r in rows])*100:.1f} % (Tz) / {np.median([r['allowC'] for r in rows])*100:.1f} % (Cp)。
+      {'末端型はニックの外側に出るので主溝の制約を受けない。' if ANCHOR_MODE == 'terminal' else 'A 型 RNA の主溝は深く狭い。'}
     - 反応配座 (NAC) に届くには最良配置から中央値 {np.median([r['strain'] for r in rows if np.isfinite(r['strain'])]) if any(np.isfinite(r['strain']) for r in rows) else float('nan'):.1f} kcal/mol のひずみが要る。
-    - 修飾位置の走査では (p,q) = {best} が最も反応配座に届きやすい
+    - 走査では {design_label(best)} が最も反応配座に届きやすい
       (必要ひずみ {SCAN[best]['strain']:.1f} kcal/mol、現行設計は {SCAN[MAIN_DESIGN]['strain']:.1f} kcal/mol)。
       ひずみ差 {SCAN[MAIN_DESIGN]['strain']-SCAN[best]['strain']:.1f} kcal/mol は速度で {math.exp((SCAN[MAIN_DESIGN]['strain']-SCAN[best]['strain'])/RT):.0f} 倍に相当する。
 
@@ -1557,7 +1740,12 @@ print(f"""
        ここでは 1 接合部の初回反応のみを扱っている。
     6. テトラジンアームの 2 級アミンはテトラジンを求核攻撃・還元しうる。
        速度以前に安定性の検討が必要。
-    7. 1-メチルシクロプロペンと 3-メチル-6-アリールテトラジンの k2 は
-       文献値の幅が大きい。ここでは 1-20 M⁻¹s⁻¹ を仮定した。
+    8. 末端型では連結後の橋が 25-30 原子と長く、通常のホスホジエステルとは別物。
+       生成物の二重鎖安定化効果は「12mer 相当」ほどではない可能性がある。
+    9. ε / β 二面角（C3'-O3'-P / C5'-O5'-P まわり）を一様に振っている。実際の RNA には
+       強い選好があるので、末端型の配座自由度はやや過大評価。
+    7. k2 は 3-メチル-6-アリールテトラジン x 1-メチル-3-アルキルシクロプロペンの
+       報告値 0.65 M⁻¹s⁻¹ (doi:10.1002/chem.201304225 Table 1 Entry 2) を中心に
+       0.2-2.0 を仮定した。
 """)
-print("  図を iedda_v17.png に保存しました。")
+print("  図を iedda_v18.png に保存しました。")
