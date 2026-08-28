@@ -100,7 +100,7 @@ E_WINDOW     = 12.0      # kcal/mol。これを超える配座は捨てる
 MAX_CONFS_USE= 600 if not QUICK else 120
 N_TORSION    = 30 if not QUICK else 12   # C7-トリアゾール結合まわりの回転
 N_TEMPLATES  = 16 if not QUICK else 4    # 熱ゆらぎ二重鎖の本数
-N_TEMPL_SCAN = 6  if not QUICK else 2    # 修飾位置の走査に使う本数
+N_TEMPL_SCAN = 12 if not QUICK else 3    # 修飾位置の走査に使う本数（[5] と同じ鋳型を使う）
 N_FREE_MC    = 4_000_000 if not QUICK else 500_000
 
 USE_BYSTANDERS = True     # 未反応の隣接ハンドルを立体障害として入れるか
@@ -1353,20 +1353,24 @@ SCAN = {}
 for design in sorted(DESIGNS, key=lambda d: (L_ASO - d[1] + d[0], d)):
     rows = []
     for it in range(N_TEMPL_SCAN):
-        rl = np.random.default_rng(SEED + 500 + it)
+        rl = np.random.default_rng(SEED + 100 + it)   # [5] と同じ鋳型集合で対応づけて比較
         dx, info = make_system(STEPS_SYM, TMPL, design, rl)
         rows.append(evaluate_system(dx, info, ARM_TZ, ARM_CP, F_FREE, bystanders=False))
     v = np.array([r["EM"][WMODE_MAIN][NAC_MAIN] for r in rows])
     vg = np.array([r["EM"][WMODE_GEOM][NAC_MAIN] for r in rows])
+    # EM_steric は「届く / 届かない」の二値に近く 0 が多いので、中央値ではなく
+    # 平均・非ゼロ割合・必要ひずみで比較する
     lo, hi = boot_ci(v)
-    SCAN[design] = dict(em=v, emg=vg, med=float(np.median(v)), medg=float(np.median(vg)), ci=(lo, hi),
+    st = [r["strain"] for r in rows if np.isfinite(r["strain"])]
+    SCAN[design] = dict(em=v, emg=vg, med=float(np.median(v)), medg=float(np.median(vg)),
+                        meang=float(np.mean(vg)), frac=float((vg > 0).mean()), ci=(lo, hi),
                         d77=float(np.median([r["d77"] for r in rows])), delta=rows[0]["delta"],
-                        strain=float(np.median([r["strain"] for r in rows if np.isfinite(r["strain"])]))
-                        if any(np.isfinite(r["strain"]) for r in rows) else np.nan)
-    mark = "  <-- 今回の設計" if design == MAIN_DESIGN else ""
-    print(f"    (p,q) = {design}  Δ = {rows[0]['delta']} nt  C7···C7 {SCAN[design]['d77']:5.2f} Å  "
-          f"EM(steric) {SCAN[design]['medg']:.2e} M  EM(boltz) {SCAN[design]['med']:.2e} M  "
-          f"ひずみ {SCAN[design]['strain']:5.1f} kcal/mol{mark}")
+                        strain=float(np.median(st)) if st else np.nan)
+    mark = " <-- 今回の設計" if design == MAIN_DESIGN else ""
+    print(f"    (p,q)={design} Δ={rows[0]['delta']}nt  C7···C7 {SCAN[design]['d77']:5.2f} Å  "
+          f"ひずみ {SCAN[design]['strain']:5.1f} kcal/mol  "
+          f"EM_steric>0 の鋳型 {SCAN[design]['frac']*100:3.0f}%  平均 {SCAN[design]['meang']:.2e} M  "
+          f"EM_boltz 中央値 {SCAN[design]['med']:.2e} M{mark}")
 print()
 
 print("=" * 92); print("  [7] ハイブリダイゼーション熱力学"); print("=" * 92)
@@ -1452,16 +1456,17 @@ fig = plt.figure(figsize=(15, 9))
 ax = fig.add_subplot(2, 3, 1)
 ds = sorted(SCAN, key=lambda d: (SCAN[d]["delta"], d))
 xs = np.arange(len(ds))
-_pos = [SCAN[d]["medg"] for d in ds if SCAN[d]["medg"] > 0]
+_pos = [SCAN[d]["meang"] for d in ds if SCAN[d]["meang"] > 0]
 _floor = (min(_pos) / 30.0) if _pos else 1e-9
-med = [max(SCAN[d]["medg"], _floor) for d in ds]
+med = [max(SCAN[d]["meang"], _floor) for d in ds]
 ax.bar(xs, med, bottom=0, color=["#c0392b" if d == MAIN_DESIGN else "#5b8db8" for d in ds])
 for i, d in enumerate(ds):
-    if SCAN[d]["medg"] <= 0:
+    if SCAN[d]["meang"] <= 0:
         ax.text(i, _floor * 1.3, "0", ha="center", fontsize=8)
 ax.set_ylim(_floor * 0.6, max(med) * 3)
-ax.set_xticks(xs); ax.set_xticklabels([f"{d}\nΔ={SCAN[d]['delta']}" for d in ds], fontsize=7)
-ax.set_yscale("log"); ax.set_ylabel("EM steric (M)"); ax.set_title("Modification positions (p,q)\nred = current design")
+ax.set_xticks(xs); ax.set_xticklabels([f"{d}\nΔ={SCAN[d]['delta']}\n{SCAN[d]['strain']:.1f}" for d in ds], fontsize=7)
+ax.set_xlabel("(p,q) / Δ / strain to reach NAC (kcal/mol)", fontsize=8)
+ax.set_yscale("log"); ax.set_ylabel("mean EM steric (M)"); ax.set_title("Modification positions (p,q)\nred = current design")
 ax.grid(alpha=.3, axis="y")
 
 ax = fig.add_subplot(2, 3, 2)
@@ -1509,7 +1514,7 @@ plt.tight_layout(); plt.savefig("iedda_v17.png", dpi=150); plt.show()
 #  Part 7  まとめと限界
 # =============================================================================
 print("=" * 92); print("  [11] まとめ"); print("=" * 92)
-best = max(SCAN, key=lambda d: SCAN[d]["medg"])
+best = min(SCAN, key=lambda d: (SCAN[d]["strain"] if np.isfinite(SCAN[d]["strain"]) else 1e9))
 print(f"""
   ■ 幾何
     - 標的 (C4G2)n 上で ASO 2 本が隣接すると、設計 (p,q)={MAIN_DESIGN} の反応対は
@@ -1517,8 +1522,9 @@ print(f"""
     - A 型 RNA の主溝は深く狭く、立体的に許される配置は全配置の
       {np.median([r['allowT'] for r in rows])*100:.1f} % (Tz) / {np.median([r['allowC'] for r in rows])*100:.1f} % (Cp) しかない。
     - 反応配座 (NAC) に届くには最良配置から中央値 {np.median([r['strain'] for r in rows if np.isfinite(r['strain'])]) if any(np.isfinite(r['strain']) for r in rows) else float('nan'):.1f} kcal/mol のひずみが要る。
-    - 修飾位置の走査では (p,q) = {best} が最良 (EM_steric {SCAN[best]['medg']:.2e} M)。
-      現行設計との比 = {SCAN[MAIN_DESIGN]['medg']/SCAN[best]['medg'] if SCAN[best]['medg']>0 else float('nan'):.2f}
+    - 修飾位置の走査では (p,q) = {best} が最も反応配座に届きやすい
+      (必要ひずみ {SCAN[best]['strain']:.1f} kcal/mol、現行設計は {SCAN[MAIN_DESIGN]['strain']:.1f} kcal/mol)。
+      ひずみ差 {SCAN[MAIN_DESIGN]['strain']-SCAN[best]['strain']:.1f} kcal/mol は速度で {math.exp((SCAN[MAIN_DESIGN]['strain']-SCAN[best]['strain'])/RT):.0f} 倍に相当する。
 
   ■ 実効モル濃度（2 通りの見方）
     EM_steric = {EM_GEOM:.3e} M  幾何学的に到達できるかだけを見た値（統計が安定・楽観側）
