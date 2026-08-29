@@ -139,6 +139,9 @@ USE_BYSTANDERS = True     # 未反応の隣接ハンドルを立体障害とし�
 RUN_NICK_SCAN     = True  # [5b] ニックの緩みへの感度
 RUN_POSITION_SCAN = True  # [6]  修飾位置 / ギャップの走査
 RUN_LINKER_SCAN   = True  # [9b] リンカー長・化学の走査（base モードのみ、+10 分ほど）
+#  [6] の走査は傍観アーム抜きの粗い比較。有望に見えた設計を [5] と同じ扱い
+#  （傍観アーム込み・N_TEMPLATES 本）で本番評価し直すリスト。1 件あたり +4 分ほど。
+COMPARE_DESIGNS = [(3, 4)] if ANCHOR_MODE == "terminal" else [(3, 5)]
 N_TEMPL_LINKER  = 12
 N_CONFS_LINKER  = 1200
 N_BYS          = 3 if not QUICK else 2   # 傍観アームの配置をボルツマン分布から何点引くか
@@ -1544,6 +1547,20 @@ if RUN_NICK_SCAN:
               f"{np.median([r['allowC'] for r in rr])*100:5.1f}%"
               f"{(np.median(st) if st else np.nan):9.1f}"
               f"{NICKSCAN[-1][3]:12.2e}{NICKSCAN[-1][4]:12.2e}")
+    print()
+
+if COMPARE_DESIGNS:
+    print("=" * 92); print("  [5c] 対抗設計の本番評価（[5] と同じ条件・傍観アーム込み）"); print("=" * 92)
+    print("    [6] の走査は傍観アームを省いた粗い比較なので、有望なものは同種ハンドルの")
+    print("    混み合いも入れて評価し直す。\n")
+    for _d in COMPARE_DESIGNS:
+        _rows = []
+        for it in range(N_TEMPLATES):
+            _rl = np.random.default_rng(SEED + 100 + it)
+            _dxc, _infc = make_system(STEPS_SYM, TMPL, _d, _rl)
+            _rows.append(evaluate_system(_dxc, _infc, ARM_TZ, ARM_CP, F_FREE,
+                                         bystanders=USE_BYSTANDERS))
+        summarize(_rows, f"{design_label(_d)}（傍観アーム込み）")
     print()
 
 print("=" * 92)
