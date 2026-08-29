@@ -128,8 +128,9 @@ PRUNE_RMS    = 0.4
 E_WINDOW     = 12.0      # kcal/mol。これを超える配座は捨てる
 MAX_CONFS_USE= 600 if not QUICK else 120
 N_TORSION    = 30 if not QUICK else 12   # C7-トリアゾール結合まわりの回転
-N_TEMPLATES  = 16 if not QUICK else 4    # 熱ゆらぎ二重鎖の本数
-N_TEMPL_SCAN = 12 if not QUICK else 3    # 修飾位置の走査に使う本数（[5] と同じ鋳型を使う）
+#  鋳型間のばらつきが支配的なので本数は多めに。EM_boltz は鋳型ごとに数桁ばらつく。
+N_TEMPLATES  = 24 if not QUICK else 4    # 熱ゆらぎ二重鎖の本数
+N_TEMPL_SCAN = 16 if not QUICK else 3    # 修飾位置の走査に使う本数（[5] と同じ鋳型を使う）
 N_FREE_MC    = 4_000_000 if not QUICK else 500_000
 
 USE_BYSTANDERS = True     # 未反応の隣接ハンドルを立体障害として入れるか
@@ -138,7 +139,7 @@ USE_BYSTANDERS = True     # 未反応の隣接ハンドルを立体障害とし�
 RUN_NICK_SCAN     = True  # [5b] ニックの緩みへの感度
 RUN_POSITION_SCAN = True  # [6]  修飾位置 / ギャップの走査
 RUN_LINKER_SCAN   = True  # [9b] リンカー長・化学の走査（base モードのみ、+10 分ほど）
-N_TEMPL_LINKER  = 8
+N_TEMPL_LINKER  = 12
 N_CONFS_LINKER  = 1200
 N_BYS          = 3 if not QUICK else 2   # 傍観アームの配置をボルツマン分布から何点引くか
 
@@ -1487,6 +1488,15 @@ def summarize(rows, label):
     for lv in ("tight", "medium", "loose"):
         vals = {wm: np.array([r["EM"][wm][lv] for r in rows]) for wm in WMODES}
         print(f"    EM ({lv:6s}) 中央値 " + " ".join(f"{np.median(vals[wm]):12.3e}" for wm in WMODES))
+    # EM_steric はほぼ二値（到達できる / できない）なので、中央値だけ見ると誤読する
+    vg = np.array([r["EM"][WMODE_GEOM][NAC_MAIN] for r in rows])
+    nz = vg > 0
+    print(f"    EM_steric の内訳     : 到達できた鋳型 {int(nz.sum())}/{len(vg)} "
+          f"({nz.mean()*100:.0f} %)  非ゼロの中央値 "
+          f"{(np.median(vg[nz]) if nz.any() else 0.0):.3e} M  平均 {vg.mean():.3e} M")
+    if 0 < nz.mean() < 0.7:
+        print("      ※ 半数前後の鋳型で到達できていない = 硬い立体判定の境界上にある設計。")
+        print("        中央値は「最小の非ゼロ値の半分」程度の意味しか持たないので注意。")
     print(f"    {WMODE_MAIN}/{NAC_MAIN} の 95%CI : {lo:.3e} – {hi:.3e}   "
           f"ゼロ {int((em == 0).sum())}/{len(em)}")
     return float(np.median(em)), (lo, hi), em
@@ -1633,7 +1643,7 @@ if RUN_SENSITIVITY:
               ("反発を硬く (cap 10)", dict(LJ_REP_CAP=10.0)),
               ("方向ゆらぎ 0°", dict(DIR_WOBBLE_DEG=0.0)),
               ("方向ゆらぎ 15°", dict(DIR_WOBBLE_DEG=15.0))]
-    N_SENS = 3
+    N_SENS = 5
     print(f"    {'条件':<22s}{'許容配置 Tz/Cp':>18s}{'ひずみ':>10s}{'EM_steric':>13s}{'EM_boltz':>13s}")
     _ff_cache = {}
     for name, over in _cases:
