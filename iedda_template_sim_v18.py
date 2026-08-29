@@ -129,6 +129,9 @@ N_TEMPL_SCAN = 12 if not QUICK else 3    # 修飾位置の走査に使う本数�
 N_FREE_MC    = 4_000_000 if not QUICK else 500_000
 
 USE_BYSTANDERS = True     # 未反応の隣接ハンドルを立体障害として入れるか
+RUN_LINKER_SCAN = True    # リンカー長 / リンカー化学の走査（base モードのみ、+10 分ほど）
+N_TEMPL_LINKER  = 8
+N_CONFS_LINKER  = 1200
 N_BYS          = 3 if not QUICK else 2   # 傍観アームの配置をボルツマン分布から何点引くか
 
 # --- 物理定数・力場 ---------------------------------------------------------
@@ -721,12 +724,12 @@ V2_TORSION = 0.0 if ANCHOR_MODE == "terminal" else 2.0
 class Arm:
     pass
 
-def build_arm(smi, label):
+def build_arm(smi, label, n_confs=None, verbose=True):
     mol = Chem.AddHs(Chem.MolFromSmiles(smi))
     p = AllChem.ETKDGv3()
     p.useMacrocycleTorsions = True; p.useSmallRingTorsions = True
     p.randomSeed = SEED; p.numThreads = 0; p.pruneRmsThresh = PRUNE_RMS
-    cids = list(AllChem.EmbedMultipleConfs(mol, numConfs=N_CONFS, params=p))
+    cids = list(AllChem.EmbedMultipleConfs(mol, numConfs=n_confs or N_CONFS, params=p))
     props = AllChem.MMFFGetMoleculeProperties(mol)
     try:
         props.SetMMFFDielectricModel(2); props.SetMMFFDielectricConstant(DIELECTRIC)
@@ -740,7 +743,7 @@ def build_arm(smi, label):
     E = np.array(E); E -= E.min()
     keep = np.where(E <= E_WINDOW)[0]
     if len(keep) > MAX_CONFS_USE:      # エネルギー順ではなく無作為に間引く
-        keep = np.sort(rng.choice(keep, MAX_CONFS_USE, replace=False))   # 配座の多様性を保つ
+        keep = np.sort(np.random.default_rng(SEED).choice(keep, MAX_CONFS_USE, replace=False))
     P = np.stack([np.array(mol.GetConformer(cids[i]).GetPositions()) for i in keep])
     Ek = E[keep]
 
@@ -821,10 +824,17 @@ def build_arm(smi, label):
                 if o.GetIdx() in hmap:
                     q[hmap[o.GetIdx()]] = PHOS_O_CHARGE
     a.q = q
-    print(f"  [{label}] {Chem.rdMolDescriptors.CalcMolFormula(Chem.MolFromSmiles(smi))}  "
-          f"配座 {len(cids)} -> 採用 {len(keep)} (E <= {E_WINDOW:.0f} kcal/mol)  "
-          f"重原子 {len(a.heavy)}  形式電荷 {q.sum():+.1f}")
+    if verbose:
+        print(f"  [{label}] {Chem.rdMolDescriptors.CalcMolFormula(Chem.MolFromSmiles(smi))}  "
+              f"配座 {len(cids)} -> 採用 {len(keep)} (E <= {E_WINDOW:.0f} kcal/mol)  "
+              f"重原子 {len(a.heavy)}  形式電荷 {q.sum():+.1f}")
     return a
+
+def _seed_from(*vals):
+    """幾何から決まる再現可能なシード。グローバル RNG を使うと呼び出し順で
+    結果が変わり、[5] と [6] のように同じ設計でも数値がずれてしまう。"""
+    a = np.concatenate([np.atleast_1d(np.asarray(v, dtype=float)).ravel() for v in vals])
+    return int(abs(np.sum(np.round(a, 3) * (np.arange(1, len(a) + 1) * 1000003.0))) % (2 ** 31))
 
 def rot_between(a, b):
     v = np.cross(a, b); c = float(np.dot(a, b))
@@ -915,10 +925,11 @@ def place_arm(arm, anchor, direction, ref_atom, rna):
     C = np.einsum("rij,caj->crai", Rs, B).reshape(-1, B.shape[1], 3)
     if DIR_WOBBLE_DEG > 0:      # 塩基のプロペラ・呼吸による結合方向のゆらぎ
         n = len(C)
-        v = rng.normal(size=(n, 3))
+        wr = np.random.default_rng(_seed_from(anchor, direction, len(arm.heavy), SEED))
+        v = wr.normal(size=(n, 3))
         v -= (v * direction).sum(1)[:, None] * direction
         v /= np.linalg.norm(v, axis=1)[:, None]
-        ang = np.abs(rng.normal(0.0, math.radians(DIR_WOBBLE_DEG), n))
+        ang = np.abs(wr.normal(0.0, math.radians(DIR_WOBBLE_DEG), n))
         K = np.zeros((n, 3, 3))
         K[:, 0, 1] = -v[:, 2]; K[:, 0, 2] = v[:, 1]; K[:, 1, 0] = v[:, 2]
         K[:, 1, 2] = -v[:, 0]; K[:, 2, 0] = -v[:, 1]; K[:, 2, 1] = v[:, 0]
@@ -1260,10 +1271,11 @@ def evaluate_system(dx, info, arm_tz, arm_cp, f_free, bystanders=True):
     pT = bystander_ensemble(dx, info["tz_bys"], arm_tz)
     pC = bystander_ensemble(dx, info["cp_bys"], arm_cp)
     eT, eC = arm_elements(arm_tz), arm_elements(arm_cp)
-    def draw(pl, n):
+    def draw(pl, n, tag):
         w = pl.W["boltz"]; w = w / w.sum()
-        return rng.choice(len(w), n, p=w, replace=True)
-    iT, iC = draw(pT, N_BYS), draw(pC, N_BYS)
+        br = np.random.default_rng(_seed_from(pl.cen[0], tag, SEED))
+        return br.choice(len(w), n, p=w, replace=True)
+    iT, iC = draw(pT, N_BYS, 1), draw(pC, N_BYS, 2)
     outs = [_eval_once(dx, info, arm_tz, arm_cp, f_free,
                        [(pT.X[a], eT), (pC.X[b], eC)]) for a, b in zip(iT, iC)]
     res = dict(min(outs, key=lambda o: o["strain"] if np.isfinite(o["strain"]) else np.inf))
@@ -1634,6 +1646,52 @@ if RUN_SENSITIVITY:
               f"{np.median([r['EM'][WMODE_MAIN][NAC_MAIN] for r in rr]):13.2e}")
     for k, v in _base.items():
         globals()[k] = v
+    print()
+
+def _tz_linker(n, amide=False):
+    return "Cc1cn(" + "C" * n + ("C(=O)N" if amide else "N") + "Cc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
+
+def _cp_linker(n):
+    return "Cc1cn(" + "C" * n + "C(=O)NCC2C=C2C)nn1"
+
+LINKER_VARIANTS = [
+    ("現行 Tz(CH2)3/Cp(CH2)2", _tz_linker(3), _cp_linker(2)),
+    ("Tz を 1 短く (CH2)2",     _tz_linker(2), _cp_linker(2)),
+    ("Tz を 1 長く (CH2)4",     _tz_linker(4), _cp_linker(2)),
+    ("Tz を 2 長く (CH2)5",     _tz_linker(5), _cp_linker(2)),
+    ("Cp を 1 短く (CH2)1",     _tz_linker(3), _cp_linker(1)),
+    ("Cp を 1 長く (CH2)3",     _tz_linker(3), _cp_linker(3)),
+    ("両方 1 長く",             _tz_linker(4), _cp_linker(3)),
+    ("Tz アミン->アミド (中性)", _tz_linker(2, amide=True), _cp_linker(2)),
+]
+
+if RUN_LINKER_SCAN and ANCHOR_MODE == "base":
+    print("=" * 92); print("  [9b] リンカーの長さ・化学の走査"); print("=" * 92)
+    print("    修飾位置 ([6]) とリンカー ([9b]) のどちらに伸びしろがあるかを比べる。")
+    print(f"    {N_TEMPL_LINKER} 本、[5] と同じ鋳型、傍観アームは省略。\n")
+    print(f"    {'条件':<24s}{'許容 Tz/Cp':>15s}{'ひずみ':>8s}{'到達%':>7s}"
+          f"{'EM_steric':>12s}{'EM_unif':>11s}{'EM_boltz':>11s}")
+    LSCAN = {}
+    for lab, stz, scp in LINKER_VARIANTS:
+        _at = build_arm(stz, lab, n_confs=N_CONFS_LINKER, verbose=False)
+        _ac = build_arm(scp, lab, n_confs=N_CONFS_LINKER, verbose=False)
+        _ff = free_reference(_at, _ac, n_mc=min(N_FREE_MC, 2_000_000))
+        _rr = []
+        for it in range(N_TEMPL_LINKER):
+            _rl = np.random.default_rng(SEED + 100 + it)
+            _dxl, _infl = make_system(STEPS_SYM, TMPL, MAIN_DESIGN, _rl)
+            _rr.append(evaluate_system(_dxl, _infl, _at, _ac, _ff, bystanders=False))
+        _vg = np.array([r["EM"][WMODE_GEOM][NAC_MAIN] for r in _rr])
+        _vu = np.array([r["EM"]["unif"][NAC_MAIN] for r in _rr])
+        _vb = np.array([r["EM"]["boltz"][NAC_MAIN] for r in _rr])
+        _st = [r["strain"] for r in _rr if np.isfinite(r["strain"])]
+        LSCAN[lab] = dict(steric=float(_vg.mean()), unif=float(np.median(_vu)),
+                          boltz=float(np.median(_vb)), frac=float((_vg > 0).mean()),
+                          strain=float(np.median(_st)) if _st else np.nan)
+        print(f"    {lab:<24s}{np.median([r['allowT'] for r in _rr])*100:7.2f}%/"
+              f"{np.median([r['allowC'] for r in _rr])*100:5.2f}%"
+              f"{LSCAN[lab]['strain']:8.1f}{LSCAN[lab]['frac']*100:6.0f}%"
+              f"{LSCAN[lab]['steric']:12.2e}{LSCAN[lab]['unif']:11.2e}{LSCAN[lab]['boltz']:11.2e}")
     print()
 
 print("=" * 92); print("  [10] 図"); print("=" * 92)
