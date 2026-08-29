@@ -103,11 +103,15 @@ PDB_LOCAL_FILES = []        # ネットが無い環境用: ローカル .pdb の
 
 # --- アーム分子 -------------------------------------------------------------
 #  base モード: トリアゾール C4 上のメチル基が 7-deaza-G の C7 に置き換わる
-#    C7 - triazole - (CH2)3 - NH - CH2 - C6H4 - tetrazine(3-Me)
-#    C7 - triazole - (CH2)2 - CO - NH - CH2 - cyclopropene(1-Me)
-SMI_TZ_BASE = "Cc1cn(CCCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
-SMI_CP_BASE = "Cc1cn(CCC(=O)NCC2C=C2C)nn1"
-#  参考: v17 で使った旧リンカー（Tz は α-メチル分岐あり、Cp はカルバメートで 1 原子長い）
+#  現行（Tz 側はカルバメートで中性、Cp 側は 1 原子短い）
+#    C7 - triazole - (CH2)3 - O - CO - NH - CH2 - C6H4 - tetrazine(3-Me)
+#    C7 - triazole - (CH2)1 - CO - NH - CH2 - cyclopropene(1-Me)
+SMI_TZ_BASE = "Cc1cn(CCCOC(=O)NCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
+SMI_CP_BASE = "Cc1cn(CC(=O)NCC2C=C2C)nn1"
+#  参考: 1 世代前（Tz は プロトン化 2 級アミン、Cp は 1 原子長い）
+SMI_TZ_BASE_AMINE = "Cc1cn(CCCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
+SMI_CP_BASE_LONG  = "Cc1cn(CCC(=O)NCC2C=C2C)nn1"
+#  参考: v17 の初代（Tz は α-メチル分岐あり、Cp はカルバメートで逆向き）
 SMI_TZ_BASE_V17 = "Cc1cn(C(C)CCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
 SMI_CP_BASE_V17 = "Cc1cn(CCNC(=O)OCC2C=C2C)nn1"
 #  terminal モード: 先頭のメチル基が RNA の C3'/C5' に置き換わり、続く O が
@@ -129,7 +133,11 @@ N_TEMPL_SCAN = 12 if not QUICK else 3    # 修飾位置の走査に使う本数�
 N_FREE_MC    = 4_000_000 if not QUICK else 500_000
 
 USE_BYSTANDERS = True     # 未反応の隣接ハンドルを立体障害として入れるか
-RUN_LINKER_SCAN = True    # リンカー長 / リンカー化学の走査（base モードのみ、+10 分ほど）
+#  走査セクションの ON/OFF。全部 False にすると [5] の 0 gap EM と速度論だけを
+#  5 分ほどで出せる。
+RUN_NICK_SCAN     = True  # [5b] ニックの緩みへの感度
+RUN_POSITION_SCAN = True  # [6]  修飾位置 / ギャップの走査
+RUN_LINKER_SCAN   = True  # [9b] リンカー長・化学の走査（base モードのみ、+10 分ほど）
 N_TEMPL_LINKER  = 8
 N_CONFS_LINKER  = 1200
 N_BYS          = 3 if not QUICK else 2   # 傍観アームの配置をボルツマン分布から何点引くか
@@ -1500,7 +1508,7 @@ if _bestrow is not None:
 if USE_BYSTANDERS:
     EM_NB, CI_NB, EM_ARR_NB = summarize(RES[False], "傍観ハンドルなし（参考）")
 print()
-if True:
+if RUN_NICK_SCAN:
     print("=" * 92); print(f"  [5b] ニックの緩みへの感度 ({design_label(MAIN_DESIGN)})"); print("=" * 92)
     print("    反応する 2 ハンドルは ASO_A と ASO_B にまたがっているので、両者の相対位置は")
     print("    ニックの柔らかさで決まる。ニックは二重鎖で最も緩い点なので、剛体固定は最悪条件。")
@@ -1531,6 +1539,8 @@ if True:
 print("=" * 92)
 print("  [6] " + ("ASO 間ギャップの走査" if ANCHOR_MODE == "terminal" else "修飾位置 (p, q) の走査"))
 print("=" * 92)
+if not RUN_POSITION_SCAN:
+    print("    RUN_POSITION_SCAN = False のためスキップ（本命設計のみ評価）\n")
 if ANCHOR_MODE == "terminal":
     print("    ギャップ g = ASO 2 本の間に残る未占有テンプレート塩基数。")
     print(f"    ※ 標的が周期 {L_ASO} の反復なので、実際に相補鎖として入れるのは g ≡ 0 (mod {L_ASO}) だけ。")
@@ -1540,8 +1550,10 @@ else:
     print("    反応するのは常に接合部越えの対のみ。")
 print(f"    傍観アームは省いた比較（{N_TEMPL_SCAN} 本、[5] と同じ鋳型）\n")
 SCAN = {}
-for design in (DESIGNS if ANCHOR_MODE == "terminal"
-               else sorted(DESIGNS, key=lambda d: (L_ASO - d[1] + d[0], d))):
+_scan_designs = ((DESIGNS if ANCHOR_MODE == "terminal"
+                  else sorted(DESIGNS, key=lambda d: (L_ASO - d[1] + d[0], d)))
+                 if RUN_POSITION_SCAN else [MAIN_DESIGN])
+for design in _scan_designs:
     rows = []
     for it in range(N_TEMPL_SCAN):
         rl = np.random.default_rng(SEED + 100 + it)   # [5] と同じ鋳型集合で対応づけて比較
@@ -1648,21 +1660,24 @@ if RUN_SENSITIVITY:
         globals()[k] = v
     print()
 
-def _tz_linker(n, amide=False):
-    return "Cc1cn(" + "C" * n + ("C(=O)N" if amide else "N") + "Cc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
+def _tz_amine(n):     # C7-triazole-(CH2)n-NH-CH2-Ar-tetrazine  (プロトン化して +1)
+    return "Cc1cn(" + "C" * n + "NCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
 
-def _cp_linker(n):
+def _tz_carb(n):      # C7-triazole-(CH2)n-O-CO-NH-CH2-Ar-tetrazine  (中性カルバメート)
+    return "Cc1cn(" + "C" * n + "OC(=O)NCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
+
+def _cp_linker(n):    # C7-triazole-(CH2)n-CO-NH-CH2-cyclopropene
     return "Cc1cn(" + "C" * n + "C(=O)NCC2C=C2C)nn1"
 
+#  Tz 側の化学 (アミン / カルバメート) x Cp 側の長さ の 2x2 と、その周辺の長さ変化
 LINKER_VARIANTS = [
-    ("現行 Tz(CH2)3/Cp(CH2)2", _tz_linker(3), _cp_linker(2)),
-    ("Tz を 1 短く (CH2)2",     _tz_linker(2), _cp_linker(2)),
-    ("Tz を 1 長く (CH2)4",     _tz_linker(4), _cp_linker(2)),
-    ("Tz を 2 長く (CH2)5",     _tz_linker(5), _cp_linker(2)),
-    ("Cp を 1 短く (CH2)1",     _tz_linker(3), _cp_linker(1)),
-    ("Cp を 1 長く (CH2)3",     _tz_linker(3), _cp_linker(3)),
-    ("両方 1 長く",             _tz_linker(4), _cp_linker(3)),
-    ("Tz アミン->アミド (中性)", _tz_linker(2, amide=True), _cp_linker(2)),
+    ("現行 Tzカルバメ3/Cp1",  _tz_carb(3),  _cp_linker(1)),
+    ("Tzカルバメ3 / Cp2",     _tz_carb(3),  _cp_linker(2)),
+    ("Tzアミン3 / Cp1",       _tz_amine(3), _cp_linker(1)),
+    ("旧 Tzアミン3 / Cp2",    _tz_amine(3), _cp_linker(2)),
+    ("Tzカルバメ2 / Cp1",     _tz_carb(2),  _cp_linker(1)),
+    ("Tzカルバメ4 / Cp1",     _tz_carb(4),  _cp_linker(1)),
+    ("Tzカルバメ3 / Cp0",     _tz_carb(3),  _cp_linker(0)),
 ]
 
 if RUN_LINKER_SCAN and ANCHOR_MODE == "base":
