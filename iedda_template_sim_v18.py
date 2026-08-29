@@ -85,7 +85,7 @@ QUICK = False          # True にすると粗いサンプリングで数分で�
 
 # --- 標的・設計 -------------------------------------------------------------
 ASO_SEQ        = "CGGGGC"   # ASO (5'->3')。鋳型は (C4G2)n アンチセンス反復
-ANCHOR_MODE    = "terminal" # "terminal" (末端 5'/3'-OH のリン酸経由) / "base" (7-deaza-G C7)
+ANCHOR_MODE    = "base"     # "base" (7-deaza-G の C7 経由) / "terminal" (末端 5'/3'-OH のリン酸経由)
 MOD_POSITIONS  = (2, 5)     # base モードのみ: 修飾する塩基の ASO 内 1-based 位置
 GAPS_NT        = [0, 1, 2, 3, 4]   # terminal モード: ASO 間の未占有テンプレート塩基数
 N_FLANK_BP     = 3          # 構築する二重鎖の両端に足す余分な塩基対
@@ -103,8 +103,13 @@ PDB_LOCAL_FILES = []        # ネットが無い環境用: ローカル .pdb の
 
 # --- アーム分子 -------------------------------------------------------------
 #  base モード: トリアゾール C4 上のメチル基が 7-deaza-G の C7 に置き換わる
-SMI_TZ_BASE = "Cc1cn(C(C)CCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
-SMI_CP_BASE = "Cc1cn(CCNC(=O)OCC2C=C2C)nn1"
+#    C7 - triazole - (CH2)3 - NH - CH2 - C6H4 - tetrazine(3-Me)
+#    C7 - triazole - (CH2)2 - CO - NH - CH2 - cyclopropene(1-Me)
+SMI_TZ_BASE = "Cc1cn(CCCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
+SMI_CP_BASE = "Cc1cn(CCC(=O)NCC2C=C2C)nn1"
+#  参考: v17 で使った旧リンカー（Tz は α-メチル分岐あり、Cp はカルバメートで 1 原子長い）
+SMI_TZ_BASE_V17 = "Cc1cn(C(C)CCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
+SMI_CP_BASE_V17 = "Cc1cn(CCNC(=O)OCC2C=C2C)nn1"
 #  terminal モード: 先頭のメチル基が RNA の C3'/C5' に置き換わり、続く O が
 #  そのまま O3'/O5' になる。すなわち
 #    5'/3'-OH - P(=O)(O-) - O - CH2 - triazole - (CH2)3 - NH - CH2 - C6H4 - tetrazine
@@ -1166,7 +1171,7 @@ def make_system(step_pool, tmpl, design, rl, nick_open=(0.0, 0.0)):
         deaza = ()
         info = dict(seq=seq, gap=g, tz_react=("3", a1), cp_react=("5", b0),
                     tz_bys=("5", a0), cp_bys=("3", b1),
-                    aso_a=(a0, a1), aso_b=(b0, b1), delta=None)
+                    aso_a=(a0, a1), aso_b=(b0, b1), delta=None, nick_pos=a1)
     else:
         p, q = design
         g = 0
@@ -1179,11 +1184,11 @@ def make_system(step_pool, tmpl, design, rl, nick_open=(0.0, 0.0)):
         info = dict(seq=seq, gap=0, tz_react=("base", gA(q)), cp_react=("base", gB(p)),
                     tz_bys=("base", gA(p)), cp_bys=("base", gB(q)),
                     aso_a=(gA(1), gA(L_ASO)), aso_b=(gB(1), gB(L_ASO)),
-                    delta=L_ASO - q + p)
+                    delta=L_ASO - q + p, nick_pos=F + L_ASO)
     idx = rl.integers(0, len(step_pool), total - 1)
     steps = [step_pool[i] for i in idx]
-    if ANCHOR_MODE == "terminal" and any(nick_open):
-        k = info["tz_react"][1] - 1        # ASO_A の 3' 末端から次の残基へのステップ
+    if any(nick_open):
+        k = info["nick_pos"] - 1           # ASO_A の 3' 末端から ASO_B 側へのステップ
         if 0 <= k < len(steps):
             steps[k] = perturb_step(steps[k], *nick_open)
     dx = build_duplex(seq, steps, tmpl, nophos1=nophos1, deaza_pos=deaza, drop1=drop1)
@@ -1191,10 +1196,10 @@ def make_system(step_pool, tmpl, design, rl, nick_open=(0.0, 0.0)):
     return dx, info
 
 def nick_distance(dx, info):
-    """ASO_A の 3'-OH と ASO_B の 5'-OH の距離（通常のホスホジエステルなら 2.6-2.8 Å）"""
+    """ニックをはさむ O3' と O5' の距離（通常のホスホジエステルなら 2.6-2.8 Å）"""
     try:
-        return float(np.linalg.norm(res1_at(dx, info["tz_react"][1])["atoms"]["O3'"] -
-                                    res1_at(dx, info["cp_react"][1])["atoms"]["O5'"]))
+        return float(np.linalg.norm(res1_at(dx, info["nick_pos"])["atoms"]["O3'"] -
+                                    res1_at(dx, info["nick_pos"] + 1)["atoms"]["O5'"]))
     except KeyError:
         return np.nan
 
@@ -1483,11 +1488,11 @@ if _bestrow is not None:
 if USE_BYSTANDERS:
     EM_NB, CI_NB, EM_ARR_NB = summarize(RES[False], "傍観ハンドルなし（参考）")
 print()
-if ANCHOR_MODE == "terminal":
-    print("=" * 92); print("  [5b] ニックの緩みへの感度 (gap 0)"); print("=" * 92)
-    print("    ASO_A の 3'-リンカーと ASO_B の 5'-末端は、本来リン酸 1 個が入る隙間を")
-    print("    奪い合う。ニックは二重鎖で最も柔らかい点なので、剛体固定は最悪条件になる。")
-    print("    ニックを軸方向に開く / ロールさせたときに何が起きるかを見る。\n")
+if True:
+    print("=" * 92); print(f"  [5b] ニックの緩みへの感度 ({design_label(MAIN_DESIGN)})"); print("=" * 92)
+    print("    反応する 2 ハンドルは ASO_A と ASO_B にまたがっているので、両者の相対位置は")
+    print("    ニックの柔らかさで決まる。ニックは二重鎖で最も緩い点なので、剛体固定は最悪条件。")
+    print("    ニックのステップを軸方向に開く / ロールさせたときに何が起きるかを見る。\n")
     _oo = "O3'-O5'"
     print(f"    {'開き(A)/ロール(deg)':<22s}{_oo:>10s}{'許容 Tz/Cp':>16s}{'ひずみ':>9s}"
           f"{'EM_steric':>12s}{'EM_boltz':>12s}")
@@ -1496,7 +1501,7 @@ if ANCHOR_MODE == "terminal":
         rr = []
         for it in range(min(4, N_TEMPLATES)):
             rl = np.random.default_rng(SEED + 100 + it)
-            dxs, infos = make_system(STEPS_SYM, TMPL, 0, rl, nick_open=(dr, dro))
+            dxs, infos = make_system(STEPS_SYM, TMPL, MAIN_DESIGN, rl, nick_open=(dr, dro))
             row = evaluate_system(dxs, infos, ARM_TZ, ARM_CP, F_FREE, bystanders=False)
             row["oo"] = nick_distance(dxs, infos)
             rr.append(row)
