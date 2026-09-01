@@ -85,9 +85,15 @@ QUICK = False          # True にすると粗いサンプリングで数分で�
 
 # --- 標的・設計 -------------------------------------------------------------
 ASO_SEQ        = "CGGGGC"   # ASO (5'->3')。鋳型は (C4G2)n アンチセンス反復
-ANCHOR_MODE    = "base"     # "base" (7-deaza-G の C7 経由) / "terminal" (末端 5'/3'-OH のリン酸経由)
+#  "base"     : 7-deaza-G の C7 経由（塩基修飾、主溝に出る）
+#  "terminal" : ASO 末端 5'/3'-OH のリン酸経由（ニックの外側に出る）
+#  "triester" : 鎖内ホスホジエステルをホスホトリエステル化し、非架橋 O 経由で出す
+ANCHOR_MODE    = "triester"
 MOD_POSITIONS  = (2, 5)     # base モードのみ: 修飾する塩基の ASO 内 1-based 位置
 GAPS_NT        = [0, 1, 2, 3, 4]   # terminal モード: ASO 間の未占有テンプレート塩基数
+#  triester モード: ハンドルを載せるリン酸を「第 n 残基の 5' 側」で指定する。
+#  (2, 6) = 1-2 番目をつなぐ最初のホスホジエステルと 5-6 番目をつなぐもの。
+MOD_PHOSPHATES = (2, 6)
 N_FLANK_BP     = 3          # 構築する二重鎖の両端に足す余分な塩基対
 NICK_OPEN_SCAN = [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (1.5, 0.0), (0.0, 15.0), (1.0, 15.0)]
                             # terminal / gap 0 用: ニックの (軸方向の開き Å, ロール °)。
@@ -120,8 +126,13 @@ SMI_CP_BASE_V17 = "Cc1cn(CCNC(=O)OCC2C=C2C)nn1"
 #    5'/3'-OH - P(=O)(O-) - O - CH2 - triazole - (CH2)2 - CO - NH - CH2 - cyclopropene
 SMI_TZ_TERM = "COP(=O)([O-])OCc1cn(CCCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
 SMI_CP_TERM = "COP(=O)([O-])OCc1cn(CCC(=O)NCC2C=C2C)nn1"
-SMI_TZ = SMI_TZ_TERM if ANCHOR_MODE == "terminal" else SMI_TZ_BASE
-SMI_CP = SMI_CP_TERM if ANCHOR_MODE == "terminal" else SMI_CP_BASE
+#  triester モード: 先頭のメチル基がリンの代役、続く O が非架橋酸素の 1 つになる
+#    P - O - CH2 - triazole - (CH2)3 - NH - CH2 - C6H4 - tetrazine(3-Me)
+#    P - O - CH2 - triazole - (CH2)2 - CO - NH - CH2 - cyclopropene(1-Me)
+SMI_TZ_TRI = "COCc1cn(CCCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
+SMI_CP_TRI = "COCc1cn(CCC(=O)NCC2C=C2C)nn1"
+SMI_TZ = {"terminal": SMI_TZ_TERM, "triester": SMI_TZ_TRI}.get(ANCHOR_MODE, SMI_TZ_BASE)
+SMI_CP = {"terminal": SMI_CP_TERM, "triester": SMI_CP_TRI}.get(ANCHOR_MODE, SMI_CP_BASE)
 
 N_CONFS      = 2500 if not QUICK else 300
 PRUNE_RMS    = 0.4
@@ -141,7 +152,7 @@ RUN_POSITION_SCAN = True  # [6]  修飾位置 / ギャップの走査
 RUN_LINKER_SCAN   = True  # [9b] リンカー長・化学の走査（base モードのみ、+10 分ほど）
 #  [6] の走査は傍観アーム抜きの粗い比較。有望に見えた設計を [5] と同じ扱い
 #  （傍観アーム込み・N_TEMPLATES 本）で本番評価し直すリスト。1 件あたり +4 分ほど。
-COMPARE_DESIGNS = [(3, 4)] if ANCHOR_MODE == "terminal" else [(3, 5)]
+COMPARE_DESIGNS = {"terminal": [(3, 4)], "base": [(3, 5)], "triester": []}[ANCHOR_MODE]
 N_TEMPL_LINKER  = 12
 N_CONFS_LINKER  = 1200
 N_BYS          = 3 if not QUICK else 2   # 傍観アームの配置をボルツマン分布から何点引くか
@@ -516,7 +527,7 @@ def mean_step(steps):
 # --- 二重鎖の構築 -----------------------------------------------------------
 class Duplex:
     """strand I (ASO 鎖) と strand II (鋳型鎖) からなる正則 A 型二重鎖"""
-    __slots__ = ("res1", "res2", "atoms", "elems", "charges", "nbp")
+    __slots__ = ("res1", "res2", "atoms", "elems", "charges", "nbp", "neutral_p")
 
 def build_duplex(seq1, step_list, tmpl, nophos1=(), deaza_pos=(), drop1=(), rng=None):
     """seq1: strand I の 5'->3' 配列。step_list: 使用するステップ変換のリスト
@@ -533,6 +544,7 @@ def build_duplex(seq1, step_list, tmpl, nophos1=(), deaza_pos=(), drop1=(), rng=
     dx = Duplex()
     dx.res1, dx.res2 = [], []
     dx.nbp = nbp
+    dx.neutral_p = set()          # ホスホトリエステル化して電荷を失ったリン酸
     for k in range(nbp):
         o, Fk = F[k]
         b1 = seq1[k]
@@ -574,7 +586,8 @@ def duplex_arrays(dx, exclude=()):
                     continue
                 X.append(x)
                 E.append("C" if n.startswith("C") else n[0])
-                Q.append(PHOS_O_CHARGE if n in ("OP1", "OP2") else 0.0)
+                Q.append(PHOS_O_CHARGE if (n in ("OP1", "OP2")
+                                           and (si, r["pos"]) not in dx.neutral_p) else 0.0)
                 TAG.append((si, r["pos"], n))
     return np.array(X), np.array(E), np.array(Q), TAG
 
@@ -731,7 +744,7 @@ P_AMIN = Chem.MolFromSmarts("[NX3;H1;!$(N[C,S]=[O,S,N]);!$(N~[#7,#8])]")  # プ�
 
 #  base モードのみ: C7-トリアゾール結合の 2 回対称ねじれ障壁（共平面が有利）。
 #  terminal モードでは軸が C3'-O3' / C5'-O5'（= ε / β 二面角）なので 0 にして一様に振る。
-V2_TORSION = 0.0 if ANCHOR_MODE == "terminal" else 2.0
+V2_TORSION = 2.0 if ANCHOR_MODE == "base" else 0.0
 
 class Arm:
     pass
@@ -769,18 +782,21 @@ def build_arm(smi, label, n_confs=None, verbose=True):
     #              その O がそのまま O3'/O5' になる
     tri = set(mol.GetSubstructMatch(P_TRI))
     cap = None
-    if ANCHOR_MODE == "terminal":
+    if ANCHOR_MODE in ("terminal", "triester"):
+        want_p = (ANCHOR_MODE == "terminal")   # 末端型は O の先が P、トリエステル型は C
         for at in mol.GetAtoms():
             if at.GetSymbol() != "C":
                 continue
             hv = [n for n in at.GetNeighbors() if n.GetAtomicNum() > 1]
-            if (len(hv) == 1 and hv[0].GetSymbol() == "O"
-                    and any(x.GetSymbol() == "P" for x in hv[0].GetNeighbors())):
+            if len(hv) != 1 or hv[0].GetSymbol() != "O":
+                continue
+            nxt = [x for x in hv[0].GetNeighbors() if x.GetIdx() != at.GetIdx()]
+            if nxt and (nxt[0].GetSymbol() == "P") == want_p:
                 cap = (at.GetIdx(), hv[0].GetIdx()); break
         if cap is None:
-            raise RuntimeError(f"{label}: 末端リン酸の結合点が同定できません")
+            raise RuntimeError(f"{label}: リン酸の結合点が同定できません")
         a.tri_ref = [n.GetIdx() for n in mol.GetAtomWithIdx(cap[1]).GetNeighbors()
-                     if n.GetSymbol() == "P"][0]
+                     if n.GetIdx() != cap[0]][0]
     else:
         for at in mol.GetAtoms():
             if at.GetSymbol() != "C" or at.GetIdx() in tri:
@@ -811,8 +827,8 @@ def build_arm(smi, label, n_confs=None, verbose=True):
 
     # 立体判定に使う重原子（キャップ = C7 は RNA 側の原子なので除く）
     drop = {cap[0]} | {n.GetIdx() for n in mol.GetAtomWithIdx(cap[0]).GetNeighbors() if n.GetAtomicNum() == 1}
-    if ANCHOR_MODE == "terminal":
-        drop.add(cap[1])          # 架橋 O は RNA の O3'/O5' そのものなので二重計上しない
+    if ANCHOR_MODE in ("terminal", "triester"):
+        drop.add(cap[1])          # この O は RNA 側の原子（O3'/O5' または非架橋 O）
     a.heavy = [x.GetIdx() for x in mol.GetAtoms() if x.GetAtomicNum() > 1 and x.GetIdx() not in drop]
     a.rmin = np.array([RMIN2.get(mol.GetAtomWithIdx(i).GetSymbol(), 2.0) for i in a.heavy])
     a.eps  = np.array([EPS.get(mol.GetAtomWithIdx(i).GetSymbol(), 0.12) for i in a.heavy])
@@ -1183,7 +1199,25 @@ def make_system(step_pool, tmpl, design, rl, nick_open=(0.0, 0.0)):
        terminal モード: design = gap (ASO 間の未占有テンプレート塩基数)。
        反応対は ASO_A の 3' 末端 (Tz) と ASO_B の 5' 末端 (Cp)。"""
     F = N_FLANK_BP
-    if ANCHOR_MODE == "terminal":
+    neutral = set()
+    if ANCHOR_MODE == "triester":
+        oxy_tz, oxy_cp = design
+        total = 2 * F + 2 * L_ASO
+        seq = "".join(ASO_SEQ[(i - F) % L_ASO] for i in range(total))
+        a0, a1 = F + 1, F + L_ASO
+        b0, b1 = F + L_ASO + 1, F + 2 * L_ASO
+        drop1 = ()
+        nophos1 = (a0, b0, b1 + 1)      # 各 ASO 断片の 5' 末端を遊離 OH に
+        deaza = ()
+        _pl, _pq = MOD_PHOSPHATES
+        _tz_r, _cp_r = a0 - 1 + _pq, b0 - 1 + _pl
+        _tz_b, _cp_b = a0 - 1 + _pl, b0 - 1 + _pq
+        neutral = {(0, x) for x in (_tz_r, _cp_r, _tz_b, _cp_b)}
+        info = dict(seq=seq, gap=0, tz_react=(oxy_tz, _tz_r), cp_react=(oxy_cp, _cp_r),
+                    tz_bys=(oxy_tz, _tz_b), cp_bys=(oxy_cp, _cp_b),
+                    aso_a=(a0, a1), aso_b=(b0, b1),
+                    delta=_cp_r - _tz_r, nick_pos=a1)
+    elif ANCHOR_MODE == "terminal":
         g = int(design)
         total = 2 * F + 2 * L_ASO + g
         seq = "".join(ASO_SEQ[(i - F) % L_ASO] for i in range(total))
@@ -1215,6 +1249,7 @@ def make_system(step_pool, tmpl, design, rl, nick_open=(0.0, 0.0)):
         if 0 <= k < len(steps):
             steps[k] = perturb_step(steps[k], *nick_open)
     dx = build_duplex(seq, steps, tmpl, nophos1=nophos1, deaza_pos=deaza, drop1=drop1)
+    dx.neutral_p = neutral
     refine_duplex(dx)
     return dx, info
 
@@ -1234,15 +1269,20 @@ def anchor_of(dx, spec):
         C7, u = exocyclic_C7_dir(r)
         return C7, u, r["atoms"]["C8"]
     a = r["atoms"]
-    c, o = (a["C3'"], a["O3'"]) if kind == "3" else (a["C5'"], a["O5'"])
+    if kind in ("OP1", "OP2"):        # ホスホトリエステル: P から非架橋 O の向き
+        c, o, ref = a["P"], a[kind], a["O5'"]
+    else:
+        c, o = (a["C3'"], a["O3'"]) if kind == "3" else (a["C5'"], a["O5'"])
+        ref = a["C4'"]
     u = o - c
-    return c, u / np.linalg.norm(u), a["C4'"]
+    return c, u / np.linalg.norm(u), ref
 
 def env_exclusions(spec):
     """アームが RNA 側の原子を二重に持っている分を tree から除く"""
     kind, pos = spec
     names = {"base": ("N9", "C8", "C7", "N7", "C5", "C4"),
-             "3": ("C3'", "O3'"), "5": ("C5'", "O5'")}[kind]
+             "3": ("C3'", "O3'"), "5": ("C5'", "O5'"),
+             "OP1": ("P", "OP1"), "OP2": ("P", "OP2")}[kind]
     return {(0, pos, n) for n in names}
 
 def rna_env(dx, spec, extra=None):
@@ -1419,7 +1459,14 @@ assert F_FREE[WMODE_MAIN][NAC_MAIN] > 0, "参照系で NAC が 1 つも出ませ
 print()
 import time
 
-if ANCHOR_MODE == "terminal":
+if ANCHOR_MODE == "triester":
+    #  ホスホトリエステルは P が不斉中心になる。非架橋 O のどちらに結合するかで
+    #  リンカーの向きが変わる（Rp / Sp 相当）ので 4 通りすべて評価する。
+    DESIGNS = [(a, b) for a in ("OP1", "OP2") for b in ("OP1", "OP2")]
+    MAIN_DESIGN = ("OP1", "OP1")
+    def design_label(d):
+        return f"Tz-{d[0]} / Cp-{d[1]}"
+elif ANCHOR_MODE == "terminal":
     DESIGNS = list(GAPS_NT)
     MAIN_DESIGN = 0                     # 0 ギャップ（ニックで隣接）が本命
     def design_label(d):
@@ -1444,12 +1491,12 @@ print(f"    骨格 O3'-P : {_q['o3p'][0]:.3f} - {_q['o3p'][1]:.3f} Å (理想 1.
 print(f"    WC 水素結合 N1···N3 : {_q['wc'][0]:.2f} - {_q['wc'][1]:.2f} Å")
 print(f"    残基間の近接衝突 (<2.4 Å) : {_q['clashes']} 個")
 print(f"    ASO_A (Tz) = pos {_info0['aso_a']}, ASO_B (Cp) = pos {_info0['aso_b']}")
-print(f"    反応する 2 ハンドル: {_info0['tz_react'][0]}' 末端 pos {_info0['tz_react'][1]} (Tz) と "
-      f"{_info0['cp_react'][0]}' 末端 pos {_info0['cp_react'][1]} (Cp)"
-      if ANCHOR_MODE == "terminal" else
-      f"    反応する 2 ハンドル: ASO_A 第{MAIN_DESIGN[1]}位 (pos {_info0['tz_react'][1]}, Tz) と "
-      f"ASO_B 第{MAIN_DESIGN[0]}位 (pos {_info0['cp_react'][1]}, Cp) / 鎖内間隔 Δ = {_info0['delta']} nt")
-print(f"    未反応の傍観ハンドル: {_info0['tz_bys']} (Tz), {_info0['cp_bys']} (Cp)")
+print(f"    反応する 2 ハンドル: Tz {_info0['tz_react']} と Cp {_info0['cp_react']}"
+      + (f" / 鎖内間隔 Δ = {_info0['delta']} nt" if _info0["delta"] else ""))
+print(f"    未反応の傍観ハンドル: Tz {_info0['tz_bys']}, Cp {_info0['cp_bys']}")
+if ANCHOR_MODE == "triester":
+    print(f"    ホスホトリエステル化するリン酸: 各 ASO の第 {MOD_PHOSPHATES} 残基の 5' 側 "
+          f"(= 1-2 番目と 5-6 番目をつなぐ結合)。4 箇所とも電荷 0 として扱う。")
 _a0, _u0, _ = anchor_of(_dx0, _info0["tz_react"])
 _c0, _v0, _ = anchor_of(_dx0, _info0["cp_react"])
 print(f"    2 つのアンカー原子間の距離: {np.linalg.norm(_a0 - _c0):.2f} Å  "
@@ -1564,11 +1611,15 @@ if COMPARE_DESIGNS:
     print()
 
 print("=" * 92)
-print("  [6] " + ("ASO 間ギャップの走査" if ANCHOR_MODE == "terminal" else "修飾位置 (p, q) の走査"))
+print("  [6] " + {"terminal": "ASO 間ギャップの走査", "triester": "リン原子の立体配置の走査",
+                   "base": "修飾位置 (p, q) の走査"}[ANCHOR_MODE])
 print("=" * 92)
 if not RUN_POSITION_SCAN:
     print("    RUN_POSITION_SCAN = False のためスキップ（本命設計のみ評価）\n")
-if ANCHOR_MODE == "terminal":
+if ANCHOR_MODE == "triester":
+    print("    ホスホトリエステルの P は不斉中心。リンカーが非架橋 O のどちらに乗るかで")
+    print("    向きが変わる（合成では Rp/Sp 混合物になる）。4 通りすべて評価する。")
+elif ANCHOR_MODE == "terminal":
     print("    ギャップ g = ASO 2 本の間に残る未占有テンプレート塩基数。")
     print(f"    ※ 標的が周期 {L_ASO} の反復なので、実際に相補鎖として入れるのは g ≡ 0 (mod {L_ASO}) だけ。")
     print("       g >= 1 は「リンカーがどこまで距離を稼げるか」を見るための幾何学的な参考値。")
@@ -1577,7 +1628,7 @@ else:
     print("    反応するのは常に接合部越えの対のみ。")
 print(f"    傍観アームは省いた比較（{N_TEMPL_SCAN} 本、[5] と同じ鋳型）\n")
 SCAN = {}
-_scan_designs = ((DESIGNS if ANCHOR_MODE == "terminal"
+_scan_designs = ((DESIGNS if ANCHOR_MODE in ("terminal", "triester")
                   else sorted(DESIGNS, key=lambda d: (L_ASO - d[1] + d[0], d)))
                  if RUN_POSITION_SCAN else [MAIN_DESIGN])
 for design in _scan_designs:
@@ -1696,6 +1747,21 @@ def _tz_carb(n):      # C7-triazole-(CH2)n-O-CO-NH-CH2-Ar-tetrazine  (中性カ�
 def _cp_linker(n):    # C7-triazole-(CH2)n-CO-NH-CH2-cyclopropene
     return "Cc1cn(" + "C" * n + "C(=O)NCC2C=C2C)nn1"
 
+def _tz_tri(n, carb=False):   # P-O-CH2-triazole-(CH2)n-[NH | O-CO-NH]-CH2-Ar-tetrazine
+    return "COCc1cn(" + "C" * n + ("OC(=O)N" if carb else "N") + "Cc2ccc(C3=NN=C(C)N=N3)cc2)nn1"
+
+def _cp_tri(n):               # P-O-CH2-triazole-(CH2)n-CO-NH-CH2-cyclopropene
+    return "COCc1cn(" + "C" * n + "C(=O)NCC2C=C2C)nn1"
+
+LINKER_VARIANTS_TRI = [
+    ("現行 Tzアミン3/Cp2",  _tz_tri(3),       _cp_tri(2)),
+    ("Tzアミン3 / Cp1",     _tz_tri(3),       _cp_tri(1)),
+    ("Tzアミン4 / Cp2",     _tz_tri(4),       _cp_tri(2)),
+    ("Tzアミン2 / Cp2",     _tz_tri(2),       _cp_tri(2)),
+    ("Tzカルバメ3 / Cp2",   _tz_tri(3, True), _cp_tri(2)),
+    ("Tzカルバメ3 / Cp1",   _tz_tri(3, True), _cp_tri(1)),
+]
+
 #  Tz 側の化学 (アミン / カルバメート) x Cp 側の長さ の 2x2 と、その周辺の長さ変化
 LINKER_VARIANTS = [
     ("現行 Tzカルバメ3/Cp1",  _tz_carb(3),  _cp_linker(1)),
@@ -1707,7 +1773,10 @@ LINKER_VARIANTS = [
     ("Tzカルバメ3 / Cp0",     _tz_carb(3),  _cp_linker(0)),
 ]
 
-if RUN_LINKER_SCAN and ANCHOR_MODE == "base":
+if ANCHOR_MODE == "triester":
+    LINKER_VARIANTS = LINKER_VARIANTS_TRI
+
+if RUN_LINKER_SCAN and ANCHOR_MODE in ("base", "triester"):
     print("=" * 92); print("  [9b] リンカーの長さ・化学の走査"); print("=" * 92)
     print("    修飾位置 ([6]) とリンカー ([9b]) のどちらに伸びしろがあるかを比べる。")
     print(f"    {N_TEMPL_LINKER} 本、[5] と同じ鋳型、傍観アームは省略。\n")
