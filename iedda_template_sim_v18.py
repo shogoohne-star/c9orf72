@@ -1701,7 +1701,8 @@ if EM_GEOM <= 0:
     print("       下の表は EM_boltz（ひずみを払えば到達できる経路）だけに基づく上限的な見積り。")
 else:
     print(f"    以下の表は EM_boltz。EM_steric なら速度は約 "
-          f"{EM_GEOM/EM_MAIN if EM_MAIN > 0 else float('inf'):.0f} 倍（ただし k_off 律速で頭打ち）")
+          f"{EM_GEOM/EM_MAIN if EM_MAIN > 0 else float('inf'):.0f} 倍"
+          f"（ただし k_chem が k_rebind = k_on[ASO] に近づくと頭打ち）")
 print(f"\n    {'k2':>6s} {'[ASO]':>8s} {'θ(1鎖)':>8s} {'θ_AB':>8s} {'k_off':>10s} {'k_chem':>10s} "
       f"{'速度':>11s} {'半減期':>12s} {'鋳型効果':>10s}")
 KIN = {}
@@ -1930,11 +1931,16 @@ print(f"""
     6mer RNA:RNA の Kd = {TH['Kd']*1e9:.0f} nM、f_acc = {F_ACC} を仮定すると
     実効 Kd = {TH['Kd']/F_ACC*1e9:.0f} nM。1 µM では 1 サイトの占有率 θ = {KIN[(K2_LIST[1],ASO_LIST[1])]['theta']:.2f}、
     隣接 2 サイトが同時に埋まる確率 θ_AB = {KIN[(K2_LIST[1],ASO_LIST[1])]['theta_AB']:.2f}。
-    k_off = {KIN[(K2_LIST[1],ASO_LIST[1])]['k_off']:.2f} s⁻¹（三元複合体の寿命 {1/max(KIN[(K2_LIST[1],ASO_LIST[1])]['k_off'],1e-12)/2:.1f} 秒）に対し
-    k_chem = k2·EM = {KIN[(K2_LIST[1],ASO_LIST[1])]['k_chem']:.4f} s⁻¹。
-    -> 一度の結合イベント中に反応が完了する確率は
-       {KIN[(K2_LIST[1],ASO_LIST[1])]['k_chem']/(KIN[(K2_LIST[1],ASO_LIST[1])]['k_chem']+2*KIN[(K2_LIST[1],ASO_LIST[1])]['k_off'])*100:.2f} %。
-    「EM が高い」ことと「速く進む」ことは別問題であることに注意。
+    結合平衡の緩和 k_rebind = k_on·[ASO] = {KIN[(K2_LIST[1],ASO_LIST[1])]['k_rebind']:.2f} s⁻¹ に対し
+    k_chem = k2·EM = {KIN[(K2_LIST[1],ASO_LIST[1])]['k_chem']:.4f} s⁻¹（{KIN[(K2_LIST[1],ASO_LIST[1])]['k_rebind']/max(KIN[(K2_LIST[1],ASO_LIST[1])]['k_chem'],1e-30):.0f} 倍の余裕）。
+    -> 三元複合体は常に平衡分布にあるので rate = θ_AB·k_chem。
+       親和性をさらに上げても速度はほぼ変わらない（θ_AB が 1 に飽和するだけ）。
+
+  ■ 非テンプレート反応との分離
+    1 µM で 鋳型上 t1/2 = {fmt_time(KIN[(K2_LIST[1],ASO_LIST[1])]['t_half']).strip()}、非鋳型 t1/2 = {fmt_time(KIN[(K2_LIST[1],ASO_LIST[1])]['bg_t_half']).strip()}。
+    鋳型上の反応が 99 % 終わるまでに非鋳型が進むのは {KIN[(K2_LIST[1],ASO_LIST[1])]['bg_at_t99']*100:.3f} %。
+    非鋳型は [ASO]^2 で効き鋳型上は θ_AB で飽和するので、濃度を下げるほど分離が良い。
+    k2 を上げても両方が同じだけ速くなるので分離は改善しない（[8] の表を参照）。
 
   ■ この計算が答えていないこと（設計上の重要因子）
     1. 標的 r(C4G2)n 自身のヘアピン / G-四重鎖形成。f_acc に押し込んであるだけで、
