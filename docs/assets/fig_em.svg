@@ -1,0 +1,19 @@
+<svg viewBox="0 0 660 230" role="img" class="figure" preserveAspectRatio="xMidYMid meet">
+<text x="150" y="26" class="figlab hd" text-anchor="middle">鋳型につながれた 2 つ</text>
+<text x="500" y="26" class="figlab hd" text-anchor="middle">自由な溶液中の 2 つ</text>
+<rect x="34" y="42" width="232" height="120" rx="6" class="panel"/>
+<rect x="384" y="42" width="232" height="120" rx="6" class="panel"/>
+<rect x="52" y="128" width="196" height="16" rx="4" class="duplex"/>
+<text x="150" y="157" class="fignote" text-anchor="middle">鋳型 RNA</text>
+<path d="M 96 128 C 88 96 118 84 132 92" class="arm"/>
+<path d="M 204 128 C 212 96 182 84 168 92" class="arm"/>
+<circle cx="134" cy="92" r="7" class="dot c-accent"/>
+<circle cx="166" cy="92" r="7" class="dot c-steel"/>
+<circle cx="430" cy="76" r="7" class="dot c-accent"/>
+<circle cx="566" cy="132" r="7" class="dot c-steel"/>
+<path d="M 442 84 Q 500 100 556 126" class="lead dashed"/>
+<text x="500" y="152" class="fignote" text-anchor="middle">出会うには拡散が必要</text>
+<text x="330" y="106" class="figlab hd" text-anchor="middle">÷</text>
+<text x="330.0" y="196" class="figlab" text-anchor="middle">EM = （鋳型上で反応できる形になる確率）÷（自由な溶液で同じ形になる確率／体積）</text>
+<text x="330.0" y="216" class="fignote" text-anchor="middle">単位は M。「相手が実際に何 M の濃度でそばにいるのと同じか」を表す</text>
+</svg>

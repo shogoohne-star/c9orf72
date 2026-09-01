@@ -1,0 +1,417 @@
+<title>鋳型連結ASO 計算詳解</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+{{css}}
+</style>
+
+<header class="masthead">
+<div class="wrap">
+  <p class="eyebrow">詳解版 <span class="sep"></span> 計算条件・式・検証データ <span class="sep"></span> iedda_template_sim_v18.py</p>
+  <h1>鋳型指向型 IEDDA ライゲーションの<br>計算：手法と全数値</h1>
+  <p class="lede">結論だけをまとめた発表版とは別に、「その数値がどう出たか」を追えるようにした版。使ったソフトと出典、鋳型モデルの作り方とその検証、エネルギー関数、NAC 判定式、EM の定義、速度論モデル、感度解析の全数値を載せています。</p>
+  <dl class="metarow">
+    <div><dt>温度 / 塩</dt><dd>37 °C (310.15 K) / NaCl 150 mM</dd></div>
+    <div><dt>配座数</dt><dd>アームあたり 2,500（走査時 1,200）</dd></div>
+    <div><dt>鋳型本数</dt><dd>24（走査時 16 / 12）</dd></div>
+    <div><dt>自由参照 MC</dt><dd>4 × 10⁶ 試行</dd></div>
+  </dl>
+</div>
+</header>
+
+<div class="wrap">
+
+<section id="stack">
+  <div class="shead"><span class="qn">01</span><h2>ソフトウェア構成と、数値の出どころ</h2></div>
+  <p class="prose">この計算には<b>調整可能な自由パラメータをほとんど置いていません</b>。分子の形は RDKit の力場、鋳型の形は実測結晶構造、二重鎖の安定性は実験由来の熱力学表、反応速度は文献の実測値から取っています。残る経験的な量は 3 つ（立体反発の飽和値・引力の減衰係数・置換基の向きのゆらぎ）だけで、そのすべてを 09 節で振って影響を確認しています。</p>
+  <div class="tw"><table>
+    <caption>表 1. 使用ソフトウェアと外部データ</caption>
+    <thead><tr><th>層</th><th>使ったもの</th><th>役割</th><th>根拠・出典</th></tr></thead>
+    <tbody>
+      <tr><td>分子構造・配座</td><td><b>RDKit</b> <code>EmbedMultipleConfs</code> (ETKDGv3) + <code>MMFFOptimizeMoleculeConfs</code></td><td>各アームの 3D 配座を発生・最適化し、配座エネルギーを得る</td><td>ETKDGv3 は CSD/PDB 実験構造由来のねじれ角分布を使う距離幾何法。MMFF94 は有機小分子向けの汎用力場</td></tr>
+      <tr><td>誘電</td><td>MMFF94 距離依存誘電（ε = 78 相当）</td><td>気相の過剰な静電を抑えた配座最適化</td><td>RDKit <code>MMFFGetMoleculeForceField</code> の標準機能</td></tr>
+      <tr><td>部分構造認識</td><td>RDKit SMARTS マッチ</td><td>テトラジン環／シクロプロペン C=C／接続点を分子中から自動同定</td><td>—</td></tr>
+      <tr><td>鋳型 RNA</td><td>RCSB PDB <code>1QC0</code> <code>1QCU</code> <code>397D</code> <code>1SDR</code> <code>1RNA</code></td><td>A 型 RNA の塩基対ステップ変換 63 個と、G / C 残基の代表構造を収穫</td><td>いずれも実測 A 型 RNA 二重鎖の結晶構造</td></tr>
+      <tr><td>幾何計算</td><td><b>SciPy</b> <code>Rotation</code> / <code>least_squares</code> / <code>cKDTree</code></td><td>螺旋パラメータの分解、骨格の閉じ込み、近傍原子探索</td><td>—</td></tr>
+      <tr><td>非結合相互作用</td><td>Lennard-Jones（ソフトコア化）+ Debye–Hückel</td><td>アームと RNA・アーム同士の立体／静電</td><td>united-atom 的に膨らませた Rmin/2 と ε（本文表 4）、κ = 0.329√I</td></tr>
+      <tr><td>二重鎖熱力学</td><td>Turner 2004 最近接塩基対パラメータ + 塩補正</td><td>6mer ASO の Kd（結合の強さ）</td><td>RNA 二重鎖の実験的熱力学表</td></tr>
+      <tr><td>化学反応速度</td><td>k₂ = 0.65 M⁻¹s⁻¹</td><td>テトラジン + シクロプロペンの二次速度定数</td><td>doi:10.1002/chem.201304225, Table 1 Entry 2（実測）</td></tr>
+      <tr><td>作図</td><td>matplotlib / NumPy</td><td>—</td><td>—</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="template">
+  <div class="shead"><span class="qn">02</span><h2>鋳型 A 型二重鎖をどう作り、どう検証したか</h2></div>
+  <p class="sub">既製の理想螺旋を使わず、実測構造から「1 塩基対ぶん進む変換」を学習して積み上げる。</p>
+  <ol class="steps">
+    <li><b>実測 A 型螺旋から連続した塩基対の並びを抽出</b>
+      <p>PDB 5 件について Watson–Crick 対を認識し、連続して積み重なる区間を取り出す。逆向きに数えた同じ区間は集合として重複排除。</p></li>
+    <li><b>塩基対ステップ変換の収穫（63 個）</b>
+      <p>隣り合う塩基対の局所座標系どうしをつなぐ剛体変換を集める。得られた螺旋パラメータは<b>ねじれ 32.9 ± 2.0°、上昇 2.70 ± 0.36 Å</b>で、A 型 RNA の標準値（約 33°、2.8 Å）と一致。</p></li>
+    <li><b>回転行列の平均化とスクリュー分解</b>
+      <p>変換行列をそのまま平均すると座標系の取り方に依存してしまうため、四元数で回転を平均し、<b>スクリュー分解</b>（螺旋軸まわりの回転角＝ねじれ、軸方向の並進＝上昇）で真の螺旋パラメータを取り出す。</p></li>
+    <li><b>擬 2 回対称化</b>
+      <p>二重鎖は擬 2 回軸を持つので、変換 M が S·M·S = M⁻¹（S は 2 回回転）を満たすよう対称化。これをしないと組んだ二重鎖の 2 本鎖に非対称が残る。</p></li>
+    <li><b>残基テンプレートの選択</b>
+      <p>G は 42 残基、C は 45 残基から、互いの RMSD が最小になる代表（メドイド）を選ぶ。メドイド RMSD は 0.22–0.23 Å と、残基内部構造のばらつきは小さい。</p></li>
+    <li><b>骨格の閉じ込み（剛体精密化）</b>
+      <p>残基を変換で積んだだけでは O3'–P 結合が閉じない（1.06–2.88 Å と散らばる）。SciPy <code>least_squares</code> で各残基を剛体として動かし、O3'–P = 1.607 Å、C3'···P = 2.64 Å、O3'···O5' = 2.52 Å の restraint と衝突回避を同時に満たす。<b>結果 1.578–1.649 Å</b>。<code>jac_sparsity</code> で疎性を指定して高速化。</p></li>
+    <li><b>熱ゆらぎの生成</b>
+      <p>収穫した 63 ステップからブートストラップで引き直して 1 本ずつ二重鎖を組み、24 本のスナップショットを作る。「平均構造 1 本」ではなく分布で評価するのが要点。</p></li>
+  </ol>
+  <div class="tw"><table>
+    <caption>表 2. 鋳型モデルの検証</caption>
+    <thead><tr><th>検証項目</th><th class="n">得られた値</th><th class="n">参照値</th><th>判定</th></tr></thead>
+    <tbody>
+      <tr><td>収穫したステップ変換の数</td><td class="n">63</td><td class="n">—</td><td>—</td></tr>
+      <tr><td>ねじれ角 (°)</td><td class="n">32.9 ± 2.0</td><td class="n">約 33（A 型 RNA）</td><td><span class="tag ok">一致</span></td></tr>
+      <tr><td>上昇 (Å)</td><td class="n">2.70 ± 0.36</td><td class="n">約 2.8（A 型 RNA）</td><td><span class="tag ok">一致</span></td></tr>
+      <tr><td>G 残基メドイドの RMSD (Å)</td><td class="n">0.22</td><td class="n">—</td><td><span class="tag ok">小</span></td></tr>
+      <tr><td>C 残基メドイドの RMSD (Å)</td><td class="n">0.23</td><td class="n">—</td><td><span class="tag ok">小</span></td></tr>
+      <tr><td>O3'–P 結合長 (Å)</td><td class="n">1.578 – 1.649</td><td class="n">1.607</td><td><span class="tag ok">閉じている</span></td></tr>
+      <tr><td>Watson–Crick N1···N3 距離 (Å)</td><td class="n">2.87 – 3.03</td><td class="n">2.8 – 3.0</td><td><span class="tag ok">正常</span></td></tr>
+      <tr><td>重原子衝突</td><td class="n">0 件</td><td class="n">0</td><td><span class="tag ok">なし</span></td></tr>
+      <tr class="hi"><td>元の実測螺旋を組み直したときの RMSD (Å)</td><td class="n">0.74（290 原子）</td><td class="n">—</td><td><span class="tag ok">実測を再現</span></td></tr>
+    </tbody>
+  </table></div>
+  <figure>
+    {{svg:fig_anchor}}
+    <figcaption><b>図 1.</b> 3 つの接続位置。螺旋軸からの距離はリン原子が 8.4 Å、非架橋酸素が 9.4 Å。塩基 C7 は主溝の底に位置する。</figcaption>
+  </figure>
+</section>
+
+<section id="linkers">
+  <div class="shead"><span class="qn">03</span><h2>リンカーの構造式と SMILES</h2></div>
+  <p class="prose">計算では、RNA 側を丸ごと扱うかわりに<b>接続点をメチル基などで代替した「アーム分子」</b>を作り、その配座集団を発生させます。図中の <code>*</code> が RNA 側との接続点で、実際の計算では下表の「先頭原子の対応」に従って二重鎖の該当原子に重ね合わせます。すべて CuAAC（アジド + 末端アルキン）で組み立てられる 1,2,3-トリアゾール起点のアームです。</p>
+
+  <div class="structs">
+    <div class="sc">
+      <header><span class="n">A</span><h3>末端ホスホジエステル型</h3><span class="tag no">0 gap 到達率 0%</span></header>
+      <div class="body">
+        <div class="strow"><div class="lab"><b>テトラジン側</b>先頭 CH₃ = C3'/C5'、続く O = O3'/O5'</div><div class="mol">{{svg:A_tz}}</div></div>
+        <div class="strow"><div class="lab"><b>シクロプロペン側</b>同上</div><div class="mol">{{svg:A_cp}}</div></div>
+        <p class="smiles">Tz: <code>COP(=O)([O-])OCc1cn(CCCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1</code><br>Cp: <code>COP(=O)([O-])OCc1cn(CCC(=O)NCC2C=C2C)nn1</code></p>
+      </div>
+    </div>
+    <div class="sc">
+      <header><span class="n">B</span><h3>塩基 C7 型（7-deaza-G）</h3><span class="tag mid">位置依存</span></header>
+      <div class="body">
+        <div class="strow"><div class="lab"><b>テトラジン側</b>先頭 CH₃ = 7-deaza-G の C7。カルバメート含有</div><div class="mol">{{svg:B_tz}}</div></div>
+        <div class="strow"><div class="lab"><b>シクロプロペン側</b>同上。最短のアミド 1 個</div><div class="mol">{{svg:B_cp}}</div></div>
+        <p class="smiles">Tz: <code>Cc1cn(CCCOC(=O)NCc2ccc(C3=NN=C(C)N=N3)cc2)nn1</code><br>Cp: <code>Cc1cn(CC(=O)NCC2C=C2C)nn1</code></p>
+        <p class="smiles">比較用に走査した別案 ── 2 級アミン版 Tz: <code>Cc1cn(CCCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1</code>／1 原子伸ばした Cp: <code>Cc1cn(CCC(=O)NCC2C=C2C)nn1</code></p>
+      </div>
+    </div>
+    <div class="sc">
+      <header><span class="n">C</span><h3>ホスホトリエステル型</h3><span class="tag ok">採用</span></header>
+      <div class="body">
+        <div class="strow"><div class="lab"><b>テトラジン側</b>先頭 CH₃ = 骨格の P、続く O = 非架橋酸素 (OP1 / OP2)</div><div class="mol">{{svg:C_tz}}</div></div>
+        <div class="strow"><div class="lab"><b>シクロプロペン側</b>同上</div><div class="mol">{{svg:C_cp}}</div></div>
+        <p class="smiles">Tz: <code>COCc1cn(CCCNCc2ccc(C3=NN=C(C)N=N3)cc2)nn1</code><br>Cp: <code>COCc1cn(CCC(=O)NCC2C=C2C)nn1</code></p>
+      </div>
+    </div>
+  </div>
+  <div class="tw"><table>
+    <caption>表 3. アームの重ね合わせ規則と電荷の扱い</caption>
+    <thead><tr><th>方式</th><th>アーム先頭原子</th><th>重ね合わせ先</th><th>電荷</th></tr></thead>
+    <tbody>
+      <tr><td>A 末端リン酸</td><td>CH₃ – O – P</td><td>C3'（上流 ASO）/ C5'（下流 ASO）と O3' / O5'</td><td>リン酸ジエステル −1（非架橋 O に −0.5 ずつ）、2 級アミン +1</td></tr>
+      <tr><td>B 塩基 C7</td><td>CH₃</td><td>7-deaza-G の C7。塩基のプロペラ・呼吸を DIR_WOBBLE = 8° のゆらぎで表現</td><td>中性（カルバメート版）</td></tr>
+      <tr><td>C ホスホトリエステル</td><td>CH₃ – O</td><td>骨格 P とその非架橋酸素（OP1 または OP2）</td><td>三エステル化により中性、2 級アミン +1</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="ff">
+  <div class="shead"><span class="qn">04</span><h2>配座生成とエネルギー関数</h2></div>
+  <h3>配座集団</h3>
+  <p class="prose">各アームについて ETKDGv3 で <b>2,500 配座</b>（位置走査・リンカー走査では 1,200）を発生させ、MMFF94 で最適化。重複を除いたうえで、各配座に MMFF94 エネルギー E_conf を割り当てます。この配座集団を、接続点で二重鎖に重ね合わせたうえで、接続結合まわりに回転させて「置きうる配置」を作ります。</p>
+  <h3>RNA との相互作用</h3>
+  <p class="prose">アームの各重原子と RNA 重原子の間で Lennard-Jones と Debye–Hückel 静電を計算します。ただし剛体近似のまま真空 LJ を使うと、実際には局所的にほどけて逃げられる接触を過大評価し、また水中では打ち消される引力を過大評価します。そこで 2 つの補正を入れています。</p>
+  <div class="eqn">反発の飽和（ソフトコア）:  E_rep' = LJ_REP_CAP × E_rep / (E_rep + LJ_REP_CAP),  LJ_REP_CAP = 3.0 kcal/mol
+引力の減衰:            E_attr' = ATTR_SCALE × E_attr,          ATTR_SCALE = 0.20</div>
+  <p class="eqwhy">前者は「1 接触あたりの罰は 3 kcal/mol で頭打ち」＝ RNA 側も少しは動いて避ける、という近似。後者は脱溶媒和のコストで引力の大部分が相殺されることの表現（0.15–0.35 が妥当な範囲。09 節で振っています）。この補正を入れる前は最小エネルギーが −20 kcal/mol、ひずみが 15 kcal/mol といった非現実的な値が出ていました。</p>
+  <div class="tw"><table>
+    <caption>表 4. 非結合パラメータ</caption>
+    <thead><tr><th>元素</th><th class="n">Rmin/2 (Å)</th><th class="n">ε (kcal/mol)</th></tr></thead>
+    <tbody>
+      <tr><td>C</td><td class="n">2.00</td><td class="n">0.10</td></tr>
+      <tr><td>N</td><td class="n">1.85</td><td class="n">0.16</td></tr>
+      <tr><td>O</td><td class="n">1.75</td><td class="n">0.19</td></tr>
+      <tr><td>P</td><td class="n">2.10</td><td class="n">0.20</td></tr>
+      <tr><td>S</td><td class="n">2.10</td><td class="n">0.20</td></tr>
+    </tbody>
+  </table></div>
+  <div class="tw"><table>
+    <caption>表 5. 判定に使う閾値</caption>
+    <thead><tr><th>記号</th><th class="n">値</th><th>意味</th></tr></thead>
+    <tbody>
+      <tr><td>E_STERIC_MAX</td><td class="n">4.0 kcal/mol</td><td>RNA との<b>反発だけ</b>の許容上限。これを超える配置は「立体的に不可」として絶対的に排除する</td></tr>
+      <tr><td>E_STERIC_PAIR</td><td class="n">3.0 kcal/mol</td><td>アーム同士の反発の許容上限</td></tr>
+      <tr><td>CLASH_HARD</td><td class="n">2.0 Å</td><td>これより近い重原子接触があれば即棄却</td></tr>
+      <tr><td>E_CLAMP</td><td class="n">15.0 kcal/mol</td><td>ボルツマン重みを計算するときのエネルギー上限（最良配置基準）</td></tr>
+      <tr><td>LJ_CUTOFF</td><td class="n">9.0 Å</td><td>非結合相互作用の打ち切り距離（cKDTree で近傍 48 個まで）</td></tr>
+      <tr><td>κ</td><td class="n">0.329 √0.15 Å⁻¹</td><td>Debye 遮蔽長の逆数（150 mM）</td></tr>
+    </tbody>
+  </table></div>
+  <div class="call amber">
+    <p class="ct">「絶対」判定にした理由</p>
+    <p>初期版は「最良配置から 5 kcal/mol 以内なら許容」という<b>相対</b>基準を使っていましたが、これだとたまたま RNA に強く貼りついた 1 配置が基準になり、本来問題のない配置まで全部弾かれます。絶対的な反発上限（4 kcal/mol）に変更しました。</p>
+  </div>
+</section>
+
+<section id="nac">
+  <div class="shead"><span class="qn">05</span><h2>「反応できる配置」（NAC）の定義</h2></div>
+  <figure>
+    {{svg:fig_nac}}
+    <figcaption><b>図 2.</b> テトラジン環の中心 Q・法線 N と、シクロプロペン C=C の 2 炭素 Ca / Cb の関係で判定する。IEDDA は環の面に対して垂直方向から、2 本の結合が同時にできる形で進む。</figcaption>
+  </figure>
+  <p class="prose">テトラジン側の反応炭素 2 個を Ct1 / Ct2、シクロプロペン側を Ca / Cb とし、対応づけの 2 通り（Ct1–Ca / Ct2–Cb か、Ct1–Cb / Ct2–Ca）のうち「長い方の距離が短くなる」組を採ります。そのうえで次の 5 条件すべてを満たすものを NAC とします。</p>
+  <div class="eqn">① 形成結合距離   NAC_DMIN ≤ d_min  かつ  d_max ≤ d_max(level)      NAC_DMIN = 2.2 Å
+② 同一面かつ高さ  sign(hₐ) = sign(h_b)  かつ  min(|hₐ|,|h_b|) ≥ h_min   h = (C − Q)·N
+③ 面どうしの角度  |N · M_n| ≥ cos(ang_normal)                          M_n = C=C 側の法線
+④ 軸の平行性     |(Ct2−Ct1)·(Cb−Ca)| / (|·||·|) ≥ cos(ang_axis)
+⑤ 面内のずれ     |(M − Q) − ((M − Q)·N) N| ≤ offset_max                M = (Ca+Cb)/2</div>
+  <div class="tw"><table>
+    <caption>表 6. NAC 判定の 3 段階（本文の主結果は medium）</caption>
+    <thead><tr><th>厳しさ</th><th class="n">d_max (Å)</th><th class="n">h_min (Å)</th><th class="n">面の角度 (°)</th><th class="n">軸の角度 (°)</th><th class="n">面内ずれ (Å)</th></tr></thead>
+    <tbody>
+      <tr><td>tight（厳）</td><td class="n">3.4</td><td class="n">1.9</td><td class="n">30</td><td class="n">35</td><td class="n">1.2</td></tr>
+      <tr class="hi"><td>medium（主結果）</td><td class="n">3.8</td><td class="n">1.9</td><td class="n">40</td><td class="n">45</td><td class="n">1.6</td></tr>
+      <tr><td>loose（緩）</td><td class="n">4.2</td><td class="n">1.9</td><td class="n">50</td><td class="n">55</td><td class="n">2.2</td></tr>
+    </tbody>
+  </table></div>
+  <p class="eqwhy">下限 d ≥ 2.2 Å はすべての段階で共通（近すぎる＝すでに反発している配置を除く）。近傍探索は cKDTree（半径 4.9 Å）で loose 判定の候補を先に絞り、そのうえで 3 段階すべてを評価します。</p>
+</section>
+
+<section id="em">
+  <div class="shead"><span class="qn">06</span><h2>実効モル濃度 EM の定義と 3 つの重み付け</h2></div>
+  <figure>
+    {{svg:fig_em}}
+    <figcaption><b>図 3.</b> 鋳型につながれた 2 つのハンドルが NAC に入る確率を、自由な 2 分子の同じ確率で割って濃度に換算する。</figcaption>
+  </figure>
+  <div class="eqn">EM = ( P_NAC,tethered / ( f_free × V_free ) ) × 1660.5391
+
+  P_NAC,tethered = Σ w_A w_B f_pair · [NAC] / ( Σ w_A · Σ w_B )
+  V_free = (4/3)π R_free³ = 904.8 Å³   (R_free = 6.0 Å)
+  1660.5391 = 1 分子/Å³ を M に直す換算係数</div>
+  <p class="eqwhy"><b>分子</b>は鋳型上でアーム A・B を全配置動かしたときに NAC に入る重みつき割合。<b>分母</b>は「同じ 2 分子を半径 6 Å の球の中にランダムに置いたとき」の NAC 確率 f_free（4 × 10⁶ 回のモンテカルロ）に、その球の体積をかけたもの。割り算で「鋳型がなければどれだけの濃度が要るか」が出ます。<b>f_free の値が 1 つも 0 でないこと</b>を確認したうえで使います（0 なら EM は定義できないので、その設計は「到達不能」として EM = 0 と扱う）。</p>
+  <div class="tw"><table>
+    <caption>表 7. EM の 3 つの重み付け（W の定義）と、自由参照 f_free（medium 判定）</caption>
+    <thead><tr><th>記号</th><th>配座エネルギー E_conf</th><th>RNA との相互作用 E_int</th><th>アーム間 E_pair</th><th class="n">f_free (%)</th><th>性格</th></tr></thead>
+    <tbody>
+      <tr><td><b>EM_steric</b></td><td>等重み</td><td>E_rep ≤ 4 kcal/mol なら 1、超えたら 0</td><td>E_rep,pair ≤ 3 なら 1</td><td class="n">0.180</td><td>幾何学的な到達可能性。統計が安定し、いちばん甘い</td></tr>
+      <tr><td><b>EM_unif</b></td><td>等重み</td><td>exp(−E_int/RT)</td><td>exp(−E_pair/RT)</td><td class="n">0.197</td><td>中間</td></tr>
+      <tr class="hi"><td><b>EM_boltz</b></td><td>exp(−E_conf/RT)</td><td>exp(−E_int/RT)</td><td>exp(−E_pair/RT)</td><td class="n">0.234</td><td>アーム自身のひずみも払う。いちばん辛い下限側</td></tr>
+    </tbody>
+  </table></div>
+  <div class="call steel">
+    <p class="ct">3 本並べる意味</p>
+    <p>どの重み付けが「正しい」かは事前には決められません。そこで<b>3 通りすべてを出し、値が揃っているかを設計の信頼度そのものとして読みます</b>。ホスホトリエステル型は 3 指標の開きが 1.9 倍、塩基 C7 型 (2,5) は 48 倍でした（09 節）。<br>参考までに、旧版（v16）は f_free が 6.1% と非物理的に大きく、EM を大幅に過小評価していました。上表の 0.18–0.23% が今回の値です。</p>
+  </div>
+  <p class="prose">「ひずみ」として報告している量は、その NAC 配置に到達するために払うエネルギーの合計です。</p>
+  <div class="eqn">strain = (E_conf,A − E_conf,A^min) + (E_conf,B − E_conf,B^min) + max(E_pair, 0)</div>
+</section>
+
+<section id="kinetics">
+  <div class="shead"><span class="qn">07</span><h2>速度論モデル</h2></div>
+  <p class="prose">EM をそのまま速度に直すのは誤りです。ASO 2 本が同時に鋳型に乗っている確率（θ_AB）と、乗っている間に化学反応が終わるかどうかの競合を解く必要があります。一方で「解離したら終わり」でもありません。µM の ASO 濃度では解離してもすぐ次の分子が結合するため、律速は<b>化学反応 k_chem と再結合 k_rebind の競合</b>になります。</p>
+  <div class="eqn">Kd_eff  = Kd / f_acc                          f_acc = 0.1（標的の高次構造で結合できる割合）
+θ       = [ASO] / ([ASO] + Kd_eff)
+θ_AB    = θ²                                  隣接 2 サイトが同時に埋まる確率
+k_chem  = k₂ × EM
+k_rebind= k_on × [ASO]                        k_on = 1 × 10⁶ M⁻¹s⁻¹
+rate    = θ_AB × k_chem × k_rebind / (k_chem + k_rebind)
+k_bg    = k₂ × [ASO]                          鋳型なしの 2 分子反応
+t99     = ln(100) / rate</div>
+  <p class="eqwhy">k_chem ≪ k_rebind なら平衡近似 θ_AB·k₂·EM に、逆なら会合律速 θ_AB·k_on·[ASO] に収束します。今回の条件（EM ≈ 2.6 × 10⁻² M、1 µM）では k_chem = 1.68 × 10⁻² s⁻¹、k_rebind = 1.0 s⁻¹ で<b>平衡近似側</b>にあり、鋳型の結合と解離は律速ではありません。</p>
+  <div class="tw"><table>
+    <caption>表 8. 熱力学・速度論の入力値（ASO = 5'-CGGGGC-3'、37 °C、150 mM NaCl）</caption>
+    <thead><tr><th>量</th><th class="n">値</th><th>出どころ</th></tr></thead>
+    <tbody>
+      <tr><td>ΔH</td><td class="n">−62.1 kcal/mol</td><td>Turner 2004 最近接塩基対</td></tr>
+      <tr><td>ΔS</td><td class="n">−163.2 cal/mol/K</td><td>同上</td></tr>
+      <tr><td>ΔG (310 K, 塩補正込み)</td><td class="n">−12.41 kcal/mol</td><td>ΔG_salt = 0.10 × (N−1) × ln[Na⁺]</td></tr>
+      <tr><td>Kd</td><td class="n">1.8 nM</td><td>exp(ΔG / RT)</td></tr>
+      <tr><td>f_acc</td><td class="n">0.1</td><td>仮定。標的 (C4G2)n のヘアピン／G-四重鎖などで結合できない分</td></tr>
+      <tr><td>Kd_eff</td><td class="n">17.9 nM</td><td>Kd / f_acc</td></tr>
+      <tr><td>θ_AB @ 0.1 / 1 / 10 µM</td><td class="n">0.719 / 0.965 / 0.996</td><td>θ²</td></tr>
+      <tr><td>k₂</td><td class="n">0.65 M⁻¹s⁻¹</td><td>doi:10.1002/chem.201304225 Table 1 Entry 2</td></tr>
+      <tr><td>k_on</td><td class="n">1 × 10⁶ M⁻¹s⁻¹</td><td>核酸ハイブリダイゼーションの典型値</td></tr>
+    </tbody>
+  </table></div>
+  <p class="prose">k₂ は 0.2 / 0.65 / 2.0 M⁻¹s⁻¹ の 3 通り、ASO 濃度は 0.1 / 1 / 10 µM の 3 通りで総当たりしています。本文の数値はすべて k₂ = 0.65 のものです。</p>
+</section>
+
+<section id="results">
+  <div class="shead"><span class="qn">08</span><h2>結果の全数値</h2></div>
+  <p class="sub">主結果は 24 本の熱ゆらぎ二重鎖・傍観アームあり。走査は本数を減らし傍観アームなしで実施（本数は各表に明記）。統計量はすべて 24 本の<b>中央値</b>。</p>
+
+  <h3>8-1. 0 gap での 3 方式比較</h3>
+  <div class="tw"><table>
+    <caption>表 9. 主結果（24 本、傍観アームあり、NAC = medium）</caption>
+    <thead><tr><th>設計</th><th class="n">アンカー間距離 (Å)</th><th class="n">向きの角度 (°)</th><th class="n">許容配置 Tz (%)</th><th class="n">許容配置 Cp (%)</th><th class="n">ひずみ (kcal/mol)</th><th class="n">到達した鋳型</th><th class="n">EM_steric (M)</th><th class="n">EM_unif (M)</th><th class="n">EM_boltz (M)</th><th class="n">t<sub>1/2</sub> @1 µM</th></tr></thead>
+    <tbody>
+      <tr><td>A 末端リン酸 (gap 0)</td><td class="n">4.20</td><td class="n">104</td><td class="n">0.75</td><td class="n">0.91</td><td class="n">15.7</td><td class="n">0 / 24</td><td class="n">0</td><td class="n">6.96e-9</td><td class="n">7.21e-10</td><td class="n">約 17,700 日</td></tr>
+      <tr><td>B 塩基 C7 (2,5)</td><td class="n">11.08</td><td class="n">97</td><td class="n">0.60</td><td class="n">7.27</td><td class="n">4.9</td><td class="n">11 / 24</td><td class="n">3.88e-2</td><td class="n">1.05e-2</td><td class="n">8.08e-4</td><td class="n">約 23 分</td></tr>
+      <tr class="hi"><td>C ホスホトリエステル</td><td class="n">11.54</td><td class="n">51</td><td class="n">23.48</td><td class="n">29.69</td><td class="n">2.5</td><td class="n">24 / 24</td><td class="n">4.93e-2</td><td class="n">4.85e-2</td><td class="n">2.58e-2</td><td class="n">43.6 秒</td></tr>
+    </tbody>
+  </table></div>
+  <figure>{{svg:chart_em}}{{html:legend_em}}
+    <figcaption><b>図 4.</b> 表 9 の EM 3 列を対数軸で。</figcaption></figure>
+  <figure>{{svg:chart_allowed}}{{html:legend_allowed}}
+    <figcaption><b>図 5.</b> 表 9 の許容配置 2 列。E_rep ≤ 4 kcal/mol を満たす配置の割合。</figcaption></figure>
+  <figure>{{svg:chart_strain}}
+    <figcaption><b>図 6.</b> 表 9 のひずみ列。小さいほど良い。</figcaption></figure>
+  <figure>{{svg:chart_hit}}
+    <figcaption><b>図 7.</b> 表 9 の到達鋳型を割合にしたもの（0 / 46 / 100 %）。</figcaption></figure>
+
+  <h3>8-2. 末端リン酸型：ギャップ走査</h3>
+  <div class="tw"><table>
+    <caption>表 10. ギャップ走査（12 本、傍観アームなし）</caption>
+    <thead><tr><th>ギャップ (nt)</th><th class="n">アンカー間距離 (Å)</th><th class="n">ひずみ (kcal/mol)</th><th class="n">到達率 (%)</th><th class="n">EM_steric (M)</th><th class="n">EM_boltz (M)</th></tr></thead>
+    <tbody>
+      <tr class="hi"><td>0</td><td class="n">4.20</td><td class="n">15.1</td><td class="n">0</td><td class="n">0</td><td class="n">1.50e-10</td></tr>
+      <tr><td>1</td><td class="n">9.76</td><td class="n">3.8</td><td class="n">100</td><td class="n">4.24e-2</td><td class="n">2.04e-4</td></tr>
+      <tr><td>2</td><td class="n">14.95</td><td class="n">3.4</td><td class="n">100</td><td class="n">5.75e-2</td><td class="n">7.90e-4</td></tr>
+      <tr><td>3</td><td class="n">19.15</td><td class="n">3.3</td><td class="n">100</td><td class="n">5.62e-2</td><td class="n">1.18e-2</td></tr>
+      <tr><td>4</td><td class="n">22.41</td><td class="n">2.8</td><td class="n">100</td><td class="n">4.27e-2</td><td class="n">3.09e-2</td></tr>
+    </tbody>
+  </table></div>
+  <figure>{{svg:chart_gap}}
+    <figcaption><b>図 8.</b> 表 10 の到達率。gap 0 → 1 で不連続に切り替わる。距離だけを見れば gap 0 (4.20 Å) は近すぎるのではなく、<b>向きの角度が 104°</b> で互いに背を向けている点が本質。</figcaption></figure>
+
+  <h3>8-3. 塩基 C7 型：修飾位置の走査</h3>
+  <div class="tw"><table>
+    <caption>表 11. 修飾位置走査（16 本、傍観アームなし）。位置は各 6mer 内での G の番号、Δ は接合部をまたぐ 2 ハンドルの鎖内間隔</caption>
+    <thead><tr><th>位置</th><th class="n">Δ (nt)</th><th class="n">アンカー間距離 (Å)</th><th class="n">ひずみ (kcal/mol)</th><th class="n">到達率 (%)</th><th class="n">EM_steric (M)</th><th class="n">EM_boltz (M)</th></tr></thead>
+    <tbody>
+      <tr class="hi"><td>(2, 5)</td><td class="n">3</td><td class="n">11.08</td><td class="n">5.4</td><td class="n">50</td><td class="n">5.98e-2</td><td class="n">5.01e-4</td></tr>
+      <tr><td>(2, 4)</td><td class="n">4</td><td class="n">14.10</td><td class="n">3.1</td><td class="n">69</td><td class="n">1.07e-1</td><td class="n">6.34e-4</td></tr>
+      <tr><td>(3, 5)</td><td class="n">4</td><td class="n">14.10</td><td class="n">2.7</td><td class="n">81</td><td class="n">2.14e-1</td><td class="n">3.28e-3</td></tr>
+      <tr><td>(2, 3)</td><td class="n">5</td><td class="n">16.55</td><td class="n">3.2</td><td class="n">75</td><td class="n">5.86e-2</td><td class="n">4.43e-3</td></tr>
+      <tr class="hi"><td>(3, 4)</td><td class="n">5</td><td class="n">16.74</td><td class="n">3.7</td><td class="n">62</td><td class="n">1.42e-1</td><td class="n">3.15e-4</td></tr>
+      <tr><td>(4, 5)</td><td class="n">5</td><td class="n">16.58</td><td class="n">3.6</td><td class="n">62</td><td class="n">1.04e-1</td><td class="n">4.76e-3</td></tr>
+    </tbody>
+  </table></div>
+  <figure>{{svg:chart_pos}}
+    <figcaption><b>図 9.</b> 表 11 の到達率。<b>(2,5) と (3,4) の比較</b>：(3,4) は Δ が 5 に広がるぶん空間的には楽で到達率 62% と EM_steric 1.42e-1 を得るが、EM_boltz では 3.15e-4 と (2,5) の 5.01e-4 を下回る。指標によって順位が入れ替わることが、この方式の推定が不安定であることの表れ。走査内の最良は (3,5)。</figcaption></figure>
+  <p class="prose">なお表 11 の (2,5) は 16 本・傍観アームなしの条件なので到達率 50%、表 9 の同じ設計（24 本・傍観アームあり）では 46% になります。条件が違う表どうしを直接比べないよう注意してください。</p>
+
+  <h3>8-4. ホスホトリエステル型：ジアステレオマー</h3>
+  <div class="tw"><table>
+    <caption>表 12. 4 種のジアステレオマー（16 本、傍観アームなし）。三エステル化で P が不斉中心になるため、上流／下流それぞれで OP1・OP2 のどちらから伸ばすかの組み合わせが 4 通り生じる</caption>
+    <thead><tr><th>上流 / 下流</th><th class="n">ひずみ (kcal/mol)</th><th class="n">到達率 (%)</th><th class="n">EM_steric (M)</th><th class="n">EM_boltz (M)</th></tr></thead>
+    <tbody>
+      <tr class="hi"><td>OP1 / OP1</td><td class="n">2.5</td><td class="n">100</td><td class="n">5.40e-2</td><td class="n">3.33e-2</td></tr>
+      <tr><td>OP1 / OP2</td><td class="n">3.2</td><td class="n">100</td><td class="n">5.33e-2</td><td class="n">6.14e-4</td></tr>
+      <tr><td>OP2 / OP1</td><td class="n">2.8</td><td class="n">100</td><td class="n">4.22e-2</td><td class="n">3.40e-4</td></tr>
+      <tr><td>OP2 / OP2</td><td class="n">3.7</td><td class="n">100</td><td class="n">5.57e-2</td><td class="n">1.59e-4</td></tr>
+    </tbody>
+  </table></div>
+  <p class="prose">4 種すべてが 100% 到達、EM_steric は 4.2–5.6 × 10⁻² M と 1.3 倍以内に収まります。EM_boltz は OP1/OP1 が他より 2 桁大きいものの、最も悪い OP2/OP2 でも 1.59e-4 M で塩基 C7 型 (2,5) の 8.08e-4 と同程度。<b>異性体分離をしなくても全異性体が反応する</b>と結論できます。</p>
+
+  <h3>8-5. 鋳型 ON / OFF</h3>
+  <div class="tw"><table>
+    <caption>表 13. ON/OFF（C ホスホトリエステル型、EM_boltz = 2.58e-2 M、k₂ = 0.65 M⁻¹s⁻¹）</caption>
+    <thead><tr><th>ASO 濃度</th><th class="n">θ_AB</th><th class="n">鋳型あり t<sub>1/2</sub> (秒)</th><th class="n">表示</th><th class="n">鋳型なし t<sub>1/2</sub> (秒)</th><th class="n">表示</th><th class="n">99% 到達 (秒)</th><th class="n">その間の非鋳型変換 (%)</th><th class="n">24 h の非鋳型変換 (%)</th><th class="n">鋳型効果 (倍)</th></tr></thead>
+    <tbody>
+      <tr><td>0.1 µM</td><td class="n">0.719</td><td class="n">67.2</td><td class="n">67.2 秒</td><td class="n">1.066e7</td><td class="n">123.4 日</td><td class="n">446</td><td class="n">0.003</td><td class="n">0.6</td><td class="n">158,581</td></tr>
+      <tr class="hi"><td>1 µM</td><td class="n">0.965</td><td class="n">43.6</td><td class="n">43.6 秒</td><td class="n">1.066e6</td><td class="n">12.3 日</td><td class="n">289</td><td class="n">0.019</td><td class="n">5.5</td><td class="n">24,443</td></tr>
+      <tr><td>10 µM</td><td class="n">0.996</td><td class="n">41.6</td><td class="n">41.6 秒</td><td class="n">1.066e5</td><td class="n">29.6 時間</td><td class="n">276</td><td class="n">0.180</td><td class="n">43.0</td><td class="n">2,562</td></tr>
+    </tbody>
+  </table></div>
+  <figure>{{svg:chart_onoff}}{{html:legend_onoff}}
+    <figcaption><b>図 10.</b> 表 13 の半減期 2 列（対数軸）。鋳型ありの半減期が濃度でほとんど変わらない（67 → 42 秒）のは θ_AB が 0.72 → 1.00 に飽和するため。一方、鋳型なしは濃度に正比例するので、<b>薄くするほど ON/OFF 比が改善する</b>。</figcaption></figure>
+</section>
+
+<section id="sens">
+  <div class="shead"><span class="qn">09</span><h2>感度・頑健性解析</h2></div>
+  <p class="prose">この種の計算でいちばん危険なのは「前提をひとつ変えたら結論がひっくり返る」ことです。そこで 4 つの軸で前提を振り、EM がどれだけ動くかを設計ごとに測りました。</p>
+  <figure>{{svg:chart_robust}}{{html:legend_robust}}
+    <figcaption><b>図 11.</b> 表 14 のデータ（対数軸、小さいほど良い）。</figcaption></figure>
+  <div class="tw"><table>
+    <caption>表 14. 不確かさの幅（EM の最大 ÷ 最小、倍）</caption>
+    <thead><tr><th>振った前提</th><th>やったこと</th><th class="n">B 塩基 C7 (2,5)</th><th class="n">C ホスホトリエステル</th></tr></thead>
+    <tbody>
+      <tr><td>3 つの EM 指標の開き</td><td>steric / unif / boltz を比較</td><td class="n">48</td><td class="n">1.9</td></tr>
+      <tr><td>鋳型スナップショット間</td><td>ブートストラップ 4,000 回で中央値の 95% 信頼区間</td><td class="n">20,400</td><td class="n">3.2</td></tr>
+      <tr><td>NAC 判定の厳しさ</td><td>tight ↔ loose（表 6）</td><td class="n">104</td><td class="n">1.6</td></tr>
+      <tr><td>経験パラメータ</td><td>引力 ×0.10 / ×0.35、反発 cap 10、向きのゆらぎ</td><td class="n">到達 0 が出る条件がある</td><td class="n">1.3</td></tr>
+      <tr><td>傍観アームの有無</td><td>反応に使わない側のハンドルを実際に置く（許容配置 Tz 側 %）</td><td class="n">0.60 → 2.24</td><td class="n">23.48 → 23.49</td></tr>
+    </tbody>
+  </table></div>
+  <div class="call">
+    <p class="ct">読み方</p>
+    <p>塩基 C7 型は、鋳型スナップショットを引き直しただけで EM が 2 万倍の幅で動きます。これは「多くの二重鎖では届かず、一部の当たり構造だけで届く」＝<b>分布の裾で反応している</b>ことを意味し、中央値だけを見て設計判断するのは危険です。ホスホトリエステル型はどの軸でも 3.2 倍以内で、24 本すべてが届いている（＝分布の中心で反応している）ことと整合します。</p>
+  </div>
+  <p class="prose">傍観アームの効果が方式で正反対なのも示唆的です。塩基 C7 型では傍観アームを置くと許容配置が 0.60% → 2.24% と<b>増えます</b>。これは傍観アームが主溝を占めることで反応アームの取りうる配座が偏り、たまたま許容配置が増える方向に働くためで、要するに主溝が混雑しているということ。ホスホトリエステル型では 23.48% → 23.49% と実質無変化で、そもそも混雑していません。</p>
+  <div class="tw"><table>
+    <caption>表 15. 実行条件（再現用）</caption>
+    <thead><tr><th>設定</th><th class="n">主結果</th><th class="n">位置／リンカー走査</th><th class="n">ギャップ走査</th></tr></thead>
+    <tbody>
+      <tr><td>熱ゆらぎ二重鎖の本数</td><td class="n">24</td><td class="n">16 / 12</td><td class="n">12</td></tr>
+      <tr><td>アームあたりの配座数</td><td class="n">2,500</td><td class="n">1,200</td><td class="n">2,500</td></tr>
+      <tr><td>自由参照のモンテカルロ試行</td><td class="n">4,000,000</td><td class="n">2,000,000</td><td class="n">4,000,000</td></tr>
+      <tr><td>傍観アーム</td><td>あり／なし両方</td><td>なし</td><td>なし</td></tr>
+      <tr><td>乱数種</td><td class="n">20260828</td><td colspan="2">条件ごとに <code>_seed_from()</code> で決定的に導出</td></tr>
+    </tbody>
+  </table></div>
+  <p class="eqwhy">乱数種について：初期版では置換基の向きのゆらぎをモジュール全体の乱数生成器から引いていたため、<b>走査を回す順番によって同じ設計が違う値を返す</b>不具合がありました。現在は条件（配列・位置・鋳型番号など）から決定的に種を作る <code>_seed_from()</code> を使っており、順番によらず再現します。</p>
+</section>
+
+<section id="limits">
+  <div class="shead"><span class="qn">10</span><h2>この計算の限界</h2></div>
+  <ul class="tight">
+    <li><b>相対比較は信頼できるが、絶対値は k₂ 依存。</b>3 方式は同じ鋳型スナップショット・同じ判定基準で比べているので順位と桁差は堅い。一方 43.6 秒という半減期は、別の基質で測られた k₂ = 0.65 M⁻¹s⁻¹ をそのまま使った推定。実際の置換基では数倍動きうる（k₂ = 0.2 / 2.0 でも計算済み）。</li>
+    <li><b>標的の高次構造を陽に扱っていない。</b>r(C4G2)n が作るヘアピンや G-四重鎖は、f_acc = 0.1 という 1 個の係数に押し込んでいるだけ。実際にどれだけ ASO が結合できるかは実験で確かめる必要がある。</li>
+    <li><b>水分子を明示していない。</b>脱溶媒和は ATTR_SCALE = 0.20 という減衰係数で近似。主溝の水和構造が重要な場合（＝塩基 C7 型）ほど、この近似の誤差が効く。</li>
+    <li><b>鋳型は剛体スナップショットの集合。</b>アームと RNA が同時に動く協同的な緩和は、ソフトコア（LJ_REP_CAP = 3.0）で近似しているだけ。</li>
+    <li><b>ASO のレジスター選択を扱っていない。</b>(C4G2)n のような反復配列では 6mer ASO が複数の位置に等価に結合しうる。本計算は「隣接した 2 本が正しく並んだ状態」を出発点にしている。</li>
+    <li><b>三エステルの加水分解速度を計算していない。</b>2'-MOE 骨格と 5 分オーダーの反応時間を前提に「問題にならない」と判断しているが、これは計算による裏づけではなく仮定。</li>
+  </ul>
+  <div class="call amber">
+    <p class="ct">検証実験の提案</p>
+    <p>0.1–1 µM、37 °C、10 分で鋳型 RNA あり／なしの連結収率を LC-MS で比較する。表 13 の予測では、鋳型ありは 10 分でほぼ完了、鋳型なしは 0.02% 以下。<b>非鋳型対照を同じ時間で切ること</b>（24 時間置くと非鋳型が 5.5% まで進み、比が 3 桁落ちる）。加えて、塩基 C7 型 (3,5) を陽性対照として並べると、計算の予測順位そのものを検証できます。</p>
+  </div>
+</section>
+
+<section id="glossary">
+  <div class="shead"><span class="qn">用語</span><h2>用語・記号一覧</h2></div>
+  <dl class="gl">
+    <div><dt><span class="sym">EM</span>実効モル濃度</dt><dd>鋳型につながれた 2 つの反応基が「実質どれくらいの濃度でそばにいるか」（M）。速度は k₂ × EM。</dd></div>
+    <div><dt><span class="sym">EM_steric</span></dt><dd>立体的に許される配置を等重みで数えた EM。アームのひずみを勘定に入れない<b>甘い</b>見積り。統計が安定。</dd></div>
+    <div><dt><span class="sym">EM_unif</span></dt><dd>RNA との相互作用だけボルツマン重み、配座は等重み。中間。</dd></div>
+    <div><dt><span class="sym">EM_boltz</span></dt><dd>配座も相互作用もボルツマン重み。<b>boltz = ボルツマン分布</b>（エネルギーが高い状態ほど exp(−E/RT) 倍だけ現れにくい、という統計力学の重み）。いちばん<b>辛い</b>見積り。</dd></div>
+    <div><dt><span class="sym">NAC</span>反応可能配座</dt><dd>near-attack conformation。あと一歩で結合ができる幾何配置（05 節）。</dd></div>
+    <div><dt><span class="sym">f_free</span>自由参照確率</dt><dd>同じ 2 分子を鋳型なしで半径 6 Å の球にランダムに置いたとき NAC になる確率。EM の分母。</dd></div>
+    <div><dt><span class="sym">V_free</span></dt><dd>その参照球の体積 904.8 Å³。</dd></div>
+    <div><dt><span class="sym">strain</span>ひずみ</dt><dd>NAC に到達するために払うエネルギー（kcal/mol）。RT = 0.616 kcal/mol が室温の熱ゆらぎ 1 個ぶん。</dd></div>
+    <div><dt><span class="sym">許容配置</span>allowed</dt><dd>RNA との反発が 4 kcal/mol 以下に収まる配置の割合。「アームの置き場所があるか」の指標。</dd></div>
+    <div><dt><span class="sym">到達率</span></dt><dd>用意した鋳型スナップショットのうち、両アームが NAC に届いたものの割合。</dd></div>
+    <div><dt><span class="sym">θ / θ_AB</span>占有率</dt><dd>1 本（θ）／隣接 2 本同時（θ_AB = θ²）の ASO が鋳型に結合している確率。</dd></div>
+    <div><dt><span class="sym">Kd / Kd_eff</span>解離定数</dt><dd>結合の強さ。小さいほど強い。Kd_eff = Kd / f_acc は、標的の高次構造で結合できない分を割り引いた実効値。</dd></div>
+    <div><dt><span class="sym">f_acc</span>結合可能割合</dt><dd>標的 RNA のうち ASO が実際に結合できる割合。0.1 と仮定。</dd></div>
+    <div><dt><span class="sym">k_chem</span></dt><dd>鋳型上の化学反応の速さ（s⁻¹）= k₂ × EM。</dd></div>
+    <div><dt><span class="sym">k_rebind</span></dt><dd>解離した ASO が再結合してくる速さ（s⁻¹）= k_on × [ASO]。これが k_chem より大きければ、解離は律速にならない。</dd></div>
+    <div><dt><span class="sym">k_bg</span>背景反応</dt><dd>鋳型なしで 2 分子が衝突して進む反応の速さ = k₂ × [ASO]。</dd></div>
+    <div><dt><span class="sym">t99</span></dt><dd>反応が 99% 進むまでの時間 = ln(100) / rate。実験を切り上げる目安。</dd></div>
+    <div><dt><span class="sym">鋳型効果</span>templating factor</dt><dd>rate ÷ k_bg。鋳型があることで何倍速くなるか。</dd></div>
+    <div><dt><span class="sym">Δ</span></dt><dd>接合部をまたぐ 2 つのハンドルが鎖に沿って何塩基離れているか。</dd></div>
+    <div><dt><span class="sym">gap</span></dt><dd>ASO 2 本の間に残る、どちらにも覆われていない鋳型塩基の数。目標は 0。</dd></div>
+    <div><dt><span class="sym">傍観アーム</span>bystander</dt><dd>1 本の ASO に 2 個あるハンドルのうち、その接合部の反応に使われない方。混雑の効果を見るために置く。</dd></div>
+    <div><dt><span class="sym">OP1 / OP2</span></dt><dd>骨格リン酸の 2 つの非架橋酸素。三エステル化でどちらから伸ばすかにより不斉が生じる。</dd></div>
+    <div><dt><span class="sym">ETKDGv3</span></dt><dd>RDKit の配座発生法。実験構造から得たねじれ角の傾向を制約に使う距離幾何法。</dd></div>
+    <div><dt><span class="sym">MMFF94</span></dt><dd>有機小分子向けの汎用力場。配座エネルギーの計算に使用。</dd></div>
+    <div><dt><span class="sym">メドイド</span>medoid</dt><dd>集団の中で「他のすべてに最も近い実在のメンバー」。平均構造と違い、非現実的な形にならない。</dd></div>
+    <div><dt><span class="sym">ブートストラップ</span></dt><dd>手元のデータから重複を許して引き直すことを繰り返し、統計量のばらつきを推定する方法。</dd></div>
+  </dl>
+</section>
+
+<footer class="docfoot">
+  <p>計算スクリプト：<code>iedda_template_sim_v18.py</code>（Google Colab に貼り付けて実行）。主要な既定値：<code>ANCHOR_MODE = "triester"</code>、<code>ASO_SEQ = "CGGGGC"</code>、<code>MOD_PHOSPHATES = (2, 6)</code>、<code>MOD_POSITIONS = (2, 5)</code>、<code>N_TEMPLATES = 24</code>、<code>TEMP_C = 37</code>、<code>IONIC_M = 0.15</code>。<code>RUN_NICK_SCAN</code> / <code>RUN_POSITION_SCAN</code> / <code>RUN_LINKER_SCAN</code> / <code>RUN_SENSITIVITY</code> を True にすると 08・09 節の走査が走ります。<br>
+  結論だけをまとめた版は <a href="https://claude.ai/code/artifact/93f066da-e19a-4430-bd0d-322ed68cfd5b"><b>発表用ドキュメント「鋳型連結ASO 設計比較」</b></a> を参照。</p>
+</footer>
+
+</div>

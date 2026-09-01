@@ -1,0 +1,33 @@
+<svg viewBox="0 0 660 252" role="img" class="chart" preserveAspectRatio="xMidYMid meet">
+<line x1="118.0" y1="20" x2="118.0" y2="210" class="grid"/>
+<text x="118.0" y="226" class="tick" text-anchor="middle">0</text>
+<line x1="222.8" y1="20" x2="222.8" y2="210" class="grid"/>
+<text x="222.8" y="226" class="tick" text-anchor="middle">20</text>
+<line x1="327.6" y1="20" x2="327.6" y2="210" class="grid"/>
+<text x="327.6" y="226" class="tick" text-anchor="middle">40</text>
+<line x1="432.4" y1="20" x2="432.4" y2="210" class="grid"/>
+<text x="432.4" y="226" class="tick" text-anchor="middle">60</text>
+<line x1="537.2" y1="20" x2="537.2" y2="210" class="grid"/>
+<text x="537.2" y="226" class="tick" text-anchor="middle">80</text>
+<line x1="642.0" y1="20" x2="642.0" y2="210" class="grid"/>
+<text x="642.0" y="226" class="tick" text-anchor="middle">100</text>
+<text x="108" y="45.0" class="catlab" text-anchor="end">(2,5) Δ=3</text>
+<rect x="118" y="32.5" width="262.0" height="17" rx="2" class="bar s1"/>
+<text x="373.0" y="46.0" class="vlab inv" text-anchor="end">50 %</text>
+<text x="108" y="75.0" class="catlab" text-anchor="end">(2,4) Δ=4</text>
+<rect x="118" y="62.5" width="361.6" height="17" rx="2" class="bar s1"/>
+<text x="472.6" y="76.0" class="vlab inv" text-anchor="end">69 %</text>
+<text x="108" y="105.0" class="catlab" text-anchor="end">(3,5) Δ=4</text>
+<rect x="118" y="92.5" width="424.4" height="17" rx="2" class="bar s1"/>
+<text x="535.4" y="106.0" class="vlab inv" text-anchor="end">81 %</text>
+<text x="108" y="135.0" class="catlab" text-anchor="end">(2,3) Δ=5</text>
+<rect x="118" y="122.5" width="393.0" height="17" rx="2" class="bar s1"/>
+<text x="504.0" y="136.0" class="vlab inv" text-anchor="end">75 %</text>
+<text x="108" y="165.0" class="catlab" text-anchor="end">(3,4) Δ=5</text>
+<rect x="118" y="152.5" width="324.9" height="17" rx="2" class="bar s1"/>
+<text x="435.9" y="166.0" class="vlab inv" text-anchor="end">62 %</text>
+<text x="108" y="195.0" class="catlab" text-anchor="end">(4,5) Δ=5</text>
+<rect x="118" y="182.5" width="324.9" height="17" rx="2" class="bar s1"/>
+<text x="435.9" y="196.0" class="vlab inv" text-anchor="end">62 %</text>
+<text x="118" y="246" class="note">塩基 C7 型。16 本、傍観アームなし。Δ = 接合部をまたぐ 2 ハンドルの鎖内間隔</text>
+</svg>

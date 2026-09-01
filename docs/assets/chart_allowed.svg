@@ -1,0 +1,30 @@
+<svg viewBox="0 0 660 252" role="img" class="chart" preserveAspectRatio="xMidYMid meet">
+<line x1="118.0" y1="20" x2="118.0" y2="210" class="grid"/>
+<text x="118.0" y="226" class="tick" text-anchor="middle">0</text>
+<line x1="222.8" y1="20" x2="222.8" y2="210" class="grid"/>
+<text x="222.8" y="226" class="tick" text-anchor="middle">6</text>
+<line x1="327.6" y1="20" x2="327.6" y2="210" class="grid"/>
+<text x="327.6" y="226" class="tick" text-anchor="middle">13</text>
+<line x1="432.4" y1="20" x2="432.4" y2="210" class="grid"/>
+<text x="432.4" y="226" class="tick" text-anchor="middle">19</text>
+<line x1="537.2" y1="20" x2="537.2" y2="210" class="grid"/>
+<text x="537.2" y="226" class="tick" text-anchor="middle">26</text>
+<line x1="642.0" y1="20" x2="642.0" y2="210" class="grid"/>
+<text x="642.0" y="226" class="tick" text-anchor="middle">32</text>
+<text x="108" y="60.0" class="catlab" text-anchor="end">末端リン酸 (gap 0)</text>
+<rect x="118" y="39.0" width="12.3" height="15" rx="2" class="bar s1"/>
+<text x="137.3" y="50.5" class="vlab" text-anchor="start">1 %</text>
+<rect x="118" y="58.0" width="14.9" height="15" rx="2" class="bar s2"/>
+<text x="139.9" y="69.5" class="vlab" text-anchor="start">1 %</text>
+<text x="108" y="120.0" class="catlab" text-anchor="end">塩基 C7 (2,5)</text>
+<rect x="118" y="99.0" width="9.8" height="15" rx="2" class="bar s1"/>
+<text x="134.8" y="110.5" class="vlab" text-anchor="start">1 %</text>
+<rect x="118" y="118.0" width="119.0" height="15" rx="2" class="bar s2"/>
+<text x="230.0" y="129.5" class="vlab inv" text-anchor="end">7 %</text>
+<text x="108" y="180.0" class="catlab" text-anchor="end">ホスホトリエステル</text>
+<rect x="118" y="159.0" width="384.5" height="15" rx="2" class="bar s1"/>
+<text x="495.5" y="170.5" class="vlab inv" text-anchor="end">23 %</text>
+<rect x="118" y="178.0" width="486.2" height="15" rx="2" class="bar s2"/>
+<text x="597.2" y="189.5" class="vlab inv" text-anchor="end">30 %</text>
+<text x="118" y="246" class="note">RNA との立体反発が 4 kcal/mol 以下に収まる配置の割合（24 本の中央値）</text>
+</svg>

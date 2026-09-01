@@ -1,0 +1,24 @@
+<svg viewBox="0 0 660 162" role="img" class="chart" preserveAspectRatio="xMidYMid meet">
+<line x1="118.0" y1="20" x2="118.0" y2="120" class="grid"/>
+<text x="118.0" y="136" class="tick" text-anchor="middle">0</text>
+<line x1="222.8" y1="20" x2="222.8" y2="120" class="grid"/>
+<text x="222.8" y="136" class="tick" text-anchor="middle">4</text>
+<line x1="327.6" y1="20" x2="327.6" y2="120" class="grid"/>
+<text x="327.6" y="136" class="tick" text-anchor="middle">7</text>
+<line x1="432.4" y1="20" x2="432.4" y2="120" class="grid"/>
+<text x="432.4" y="136" class="tick" text-anchor="middle">11</text>
+<line x1="537.2" y1="20" x2="537.2" y2="120" class="grid"/>
+<text x="537.2" y="136" class="tick" text-anchor="middle">14</text>
+<line x1="642.0" y1="20" x2="642.0" y2="120" class="grid"/>
+<text x="642.0" y="136" class="tick" text-anchor="middle">18</text>
+<text x="108" y="45.0" class="catlab" text-anchor="end">末端リン酸 (gap 0)</text>
+<rect x="118" y="32.5" width="457.0" height="17" rx="2" class="bar s3"/>
+<text x="568.0" y="46.0" class="vlab inv" text-anchor="end">16 kcal/mol</text>
+<text x="108" y="75.0" class="catlab" text-anchor="end">塩基 C7 (2,5)</text>
+<rect x="118" y="62.5" width="142.6" height="17" rx="2" class="bar s3"/>
+<text x="253.6" y="76.0" class="vlab inv" text-anchor="end">5 kcal/mol</text>
+<text x="108" y="105.0" class="catlab" text-anchor="end">ホスホトリエステル</text>
+<rect x="118" y="92.5" width="72.8" height="17" rx="2" class="bar s3"/>
+<text x="183.8" y="106.0" class="vlab inv" text-anchor="end">2 kcal/mol</text>
+<text x="118" y="156" class="note">小さいほど良い。反応できる配置に届くまでに払うエネルギー（24 本の中央値）</text>
+</svg>

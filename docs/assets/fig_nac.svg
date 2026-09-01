@@ -1,0 +1,23 @@
+<svg viewBox="0 0 660 290" role="img" class="figure" preserveAspectRatio="xMidYMid meet">
+<ellipse cx="250" cy="200" rx="74" ry="17" class="ringT"/>
+<text x="250" y="205" class="figlab dim" text-anchor="middle">テトラジン環</text>
+<line x1="224" y1="118" x2="276" y2="118" class="alkene"/>
+<text x="250" y="104" class="figlab dim" text-anchor="middle">シクロプロペン C=C</text>
+<line x1="186" y1="194" x2="224" y2="124" class="forming"/>
+<line x1="314" y1="194" x2="276" y2="124" class="forming"/>
+<text x="154" y="163.0" class="figlab" text-anchor="end">形成する 2 本の結合</text>
+<line x1="158" y1="159.0" x2="188" y2="159.0" class="lead c-accent"/>
+<line x1="362" y1="118" x2="362" y2="200" class="dimline"/>
+<text x="370" y="163.0" class="figlab" text-anchor="start">面からの高さ</text>
+<circle cx="398" cy="36" r="3" class="dot c-accent"/>
+<text x="408" y="40" class="figlab" text-anchor="start">形成する 2 本の結合が 2.2–3.8 Å</text>
+<circle cx="398" cy="57" r="3" class="dot c-accent"/>
+<text x="408" y="61" class="figlab" text-anchor="start">2 つの環の面のなす角が 40° 以内</text>
+<circle cx="398" cy="78" r="3" class="dot c-accent"/>
+<text x="408" y="82" class="figlab" text-anchor="start">C=C 軸と環の軸のなす角が 45° 以内</text>
+<circle cx="398" cy="99" r="3" class="dot c-accent"/>
+<text x="408" y="103" class="figlab" text-anchor="start">アルケン中点の面内ずれが 1.6 Å 以内</text>
+<circle cx="398" cy="120" r="3" class="dot c-accent"/>
+<text x="408" y="124" class="figlab" text-anchor="start">アルケンの 2 炭素が環面の同じ側</text>
+<text x="398" y="276" class="fignote">5 つすべてを満たす配置だけを「反応できる」と数える</text>
+</svg>
