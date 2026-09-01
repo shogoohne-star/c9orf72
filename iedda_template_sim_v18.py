@@ -1870,6 +1870,9 @@ plt.tight_layout(); plt.savefig("iedda_v18.png", dpi=150); plt.show()
 # =============================================================================
 #  Part 7  まとめと限界
 # =============================================================================
+_groove_note = {"terminal": "ニックの外側に出るので主溝の制約を受けない。",
+                "triester": "リンカーが骨格の外側（溶媒側）に出るので主溝の制約を受けない。",
+                "base": "A 型 RNA の主溝は深く狭い。"}[ANCHOR_MODE]
 print("=" * 92); print("  [11] まとめ"); print("=" * 92)
 best = min(SCAN, key=lambda d: (SCAN[d]["strain"] if np.isfinite(SCAN[d]["strain"]) else 1e9))
 print(f"""
@@ -1877,11 +1880,11 @@ print(f"""
     - 設計 {design_label(MAIN_DESIGN)} の反応対のアンカー間距離は {np.median([r['d77'] for r in rows]):.1f} Å。
     - 立体的に許される配置は全配置の
       {np.median([r['allowT'] for r in rows])*100:.1f} % (Tz) / {np.median([r['allowC'] for r in rows])*100:.1f} % (Cp)。
-      {'末端型はニックの外側に出るので主溝の制約を受けない。' if ANCHOR_MODE == 'terminal' else 'A 型 RNA の主溝は深く狭い。'}
+      {_groove_note}
     - 反応配座 (NAC) に届くには最良配置から中央値 {np.median([r['strain'] for r in rows if np.isfinite(r['strain'])]) if any(np.isfinite(r['strain']) for r in rows) else float('nan'):.1f} kcal/mol のひずみが要る。
-    - 走査では {design_label(best)} が最も反応配座に届きやすい
-      (必要ひずみ {SCAN[best]['strain']:.1f} kcal/mol、現行設計は {SCAN[MAIN_DESIGN]['strain']:.1f} kcal/mol)。
-      ひずみ差 {SCAN[MAIN_DESIGN]['strain']-SCAN[best]['strain']:.1f} kcal/mol は速度で {math.exp((SCAN[MAIN_DESIGN]['strain']-SCAN[best]['strain'])/RT):.0f} 倍に相当する。
+    - 走査の結果: {'現行設計が最良' if best == MAIN_DESIGN else
+      f"{design_label(best)} が最良（必要ひずみ {SCAN[best]['strain']:.1f} vs 現行 {SCAN[MAIN_DESIGN]['strain']:.1f} kcal/mol, "
+      f"速度で {math.exp((SCAN[MAIN_DESIGN]['strain']-SCAN[best]['strain'])/RT):.0f} 倍)"}。
 
   ■ 実効モル濃度（2 通りの見方）
     EM_steric = {EM_GEOM:.3e} M  幾何学的に到達できるかだけを見た値（統計が安定・楽観側）
@@ -1912,14 +1915,22 @@ print(f"""
        伸びた配座が過小評価されている可能性がある。
     5. 連結後は 12mer になって二重鎖が一気に安定化する（協同的な鎖状伸長）。
        ここでは 1 接合部の初回反応のみを扱っている。
-    6. テトラジンアームの 2 級アミンはテトラジンを求核攻撃・還元しうる。
-       速度以前に安定性の検討が必要。
-    8. 末端型では連結後の橋が 25-30 原子と長く、通常のホスホジエステルとは別物。
-       生成物の二重鎖安定化効果は「12mer 相当」ほどではない可能性がある。
-    9. ε / β 二面角（C3'-O3'-P / C5'-O5'-P まわり）を一様に振っている。実際の RNA には
-       強い選好があるので、末端型の配座自由度はやや過大評価。
+    6. テトラジン側が 2 級アミンの場合、テトラジンを求核攻撃・還元しうる。
+       速度以前に安定性の検討が必要（[9b] にカルバメート版あり）。
     7. k2 は 3-メチル-6-アリールテトラジン x 1-メチル-3-アルキルシクロプロペンの
        報告値 0.65 M⁻¹s⁻¹ (doi:10.1002/chem.201304225 Table 1 Entry 2) を中心に
        0.2-2.0 を仮定した。
-""")
+""" + ({"triester": """    8. ★ RNA の鎖内ホスホトリエステルは加水分解に弱い。隣接する 2'-OH が中性の
+       リンを分子内攻撃すると鎖切断が起きる（アニオン性ジエステルにある静電的な
+       保護が無い）。2'-OMe / 2'-F / LNA で 2'-OH を潰すことが事実上必須。
+    9. P が不斉中心になる。ASO 1 本あたり 2 箇所なので 4 ジアステレオマー。
+       [6] の走査では立体到達性はどれも同等だが、EM_boltz には差が出る
+       -> 混合物では二相性の速度論（速い相と遅い相）が出る可能性がある。
+   10. 骨格電荷が 4 個減るぶん二重鎖はやや安定化するが、[7] の Kd は
+       ジエステル前提の Turner 2004 なのでその分ずれる。
+   11. P-O-C まわりのねじれを一様に振っている（実際には選好がある）。""",
+        "terminal": """    8. 連結後の橋が 25-30 原子と長く、通常のホスホジエステルとは別物。
+       生成物の二重鎖安定化効果は「12mer 相当」ほどではない可能性がある。
+    9. ε / β 二面角（C3'-O3'-P / C5'-O5'-P まわり）を一様に振っている。"""}
+       ).get(ANCHOR_MODE, ""))
 print("  図を iedda_v18.png に保存しました。")
