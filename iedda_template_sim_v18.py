@@ -1386,17 +1386,35 @@ def duplex_thermo(seq, na_M=IONIC_M, T=T_K):
     return dict(dH=dH, dS=dS, dG=dG, Kd=Kd)
 
 def ligation_kinetics(EM, k2, aso_M, Kd, f_acc, k_on=1.0e6):
+    """三元複合体（隣接 2 サイトが埋まった状態）からの反応速度。
+
+    結合平衡の緩和速度 k_on·[ASO] が化学反応 k_chem より十分速ければ、
+    三元複合体は常に平衡分布にあるので rate = θ_AB · k_chem（平衡近似）。
+    化学反応の方が速い場合だけ、三元複合体の生成が律速になる。
+
+    注意: k_off との競合（k_chem/(k_chem+2k_off)）で書くのは誤り。
+    複合体が一度ほどけても [ASO] が十分あればすぐ作り直されるので、
+    k_off が小さいほど遅くなるという非物理的な極限が出てしまう。"""
     Kd_eff = Kd / max(f_acc, 1e-9)
     th = aso_M / (aso_M + Kd_eff)
     th_AB = th * th
     k_off = k_on * Kd_eff
     k_chem = k2 * EM
-    rate = th_AB * 2 * k_off * k_chem / (k_chem + 2 * k_off) if (k_chem + k_off) > 0 else 0.0
-    k_bg = k2 * aso_M            # 非鋳型（2 分子）の擬 1 次速度
-    return dict(theta=th, theta_AB=th_AB, k_off=k_off, k_chem=k_chem,
+    k_rebind = k_on * aso_M                      # 三元複合体が作り直される速さ
+    eq_limit = th_AB * k_chem                    # 平衡近似（化学反応律速）
+    form_limit = th_AB * k_rebind                # 三元複合体の生成律速
+    rate = (eq_limit * k_rebind / (k_rebind + k_chem)) if (k_rebind + k_chem) > 0 else 0.0
+    k_bg = k2 * aso_M                            # 非鋳型（2 分子）の擬 1 次速度
+    t99 = (math.log(100) / rate) if rate > 0 else np.inf
+    return dict(theta=th, theta_AB=th_AB, k_off=k_off, k_chem=k_chem, k_rebind=k_rebind,
                 rate=rate, t_half=(math.log(2) / rate if rate > 0 else np.inf),
                 k_bg=k_bg, templating=(rate / k_bg if k_bg > 0 else np.inf),
-                eq_limit=th_AB * k_chem, res_limit=th_AB * 2 * k_off)
+                eq_limit=eq_limit, res_limit=form_limit,
+                t99=t99,
+                # 鋳型上の反応が 99 % 終わるまでに、非鋳型反応がどれだけ進むか
+                bg_at_t99=(1 - math.exp(-k_bg * t99)) if np.isfinite(t99) else 1.0,
+                bg_24h=1 - math.exp(-k_bg * 86400.0),
+                bg_t_half=(math.log(2) / k_bg if k_bg > 0 else np.inf))
 
 def fmt_time(s):
     if not np.isfinite(s): return "     ---"
@@ -1694,11 +1712,24 @@ for k2 in K2_LIST:
         print(f"    {k2:6.1f} {c*1e6:7.2f}µM {r['theta']:8.3f} {r['theta_AB']:8.3f} "
               f"{r['k_off']:10.3f} {r['k_chem']:10.4f} {r['rate']:11.3e} {fmt_time(r['t_half'])} "
               f"{r['templating']:9.1f}x")
-print("\n    速度 = θ_AB · 2k_off · k_chem/(k_chem+2k_off)  [s⁻¹ / 接合部]")
+print("\n    速度 = θ_AB · k_chem · k_rebind/(k_rebind+k_chem)  [s⁻¹ / 接合部]  (k_rebind = k_on[ASO])")
 print("    鋳型効果 = (鋳型上の擬 1 次速度) / (非鋳型 2 分子反応の擬 1 次速度 k2[ASO])")
 _r = KIN[(K2_LIST[1], ASO_LIST[1])]
-print(f"    平衡近似の上限 {_r['eq_limit']:.3e} s⁻¹ / 三元複合体寿命による上限 {_r['res_limit']:.3e} s⁻¹")
-print(f"    -> 律速は {'化学反応' if _r['k_chem'] < 2*_r['k_off'] else '二重鎖の解離（滞在時間）'}")
+print(f"    平衡近似 {_r['eq_limit']:.3e} s⁻¹ / 三元複合体の生成律速 {_r['res_limit']:.3e} s⁻¹")
+print(f"    -> 律速は {'化学反応（結合は平衡に達している）' if _r['k_chem'] < _r['k_rebind'] else '三元複合体の生成'}"
+      f"  [k_chem {_r['k_chem']:.4f} vs k_rebind {_r['k_rebind']:.3f} s⁻¹]")
+
+print("\n    ■ 非テンプレート反応との分離（ON/OFF 設計が成立しているか）")
+print("      鋳型効果は濃度で変わるので、判定は「鋳型上の反応が終わるまでに")
+print("      非鋳型反応がどれだけ進むか」で見る。")
+print(f"\n    {'k2':>5s} {'[ASO]':>8s} {'非鋳型 t1/2':>12s} {'鋳型上 99%':>11s} "
+      f"{'その間の非鋳型':>14s} {'24h の非鋳型':>13s}")
+for _k2 in K2_LIST:
+    for _c in ASO_LIST:
+        _q = KIN[(_k2, _c)]
+        print(f"    {_k2:5.2f} {_c*1e6:6.2f}µM {fmt_time(_q['bg_t_half'])} {fmt_time(_q['t99'])} "
+              f"{_q['bg_at_t99']*100:12.3f} % {_q['bg_24h']*100:11.1f} %")
+print("      非鋳型は 2 分子反応なので濃度の 2 乗で効く。低濃度ほど分離が良い。")
 print()
 if RUN_SENSITIVITY:
     print("=" * 92); print("  [9] 経験的パラメータへの感度"); print("=" * 92)
