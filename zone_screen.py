@@ -109,7 +109,14 @@ class CFG:
     # ---- リンカー (PEG 系) -----------------------------------------------
     EO_CONTOUR_A   = 3.5
     EO_PERSIST_A   = 3.8
-    SI_CONTOUR_A   = 12.0   # 自壊性コア (デンドロン等) の contour length [Å]
+    # --- テザーの実寸 (Q3PA トリメチルロック + 分岐型自壊性コアの実構造) -----
+    #  腕A (中心環 -> オリゴ1, DBCO 側):
+    #     CH2-O 2.4 | m-フェニレン 4.9 | トリアゾール 2.2 | DBCO 縮環 7.0 | 末端修飾
+    #  腕B (中心環 -> オリゴ2, アミド側):
+    #     C(=O)NH 2.4 | 末端修飾
+    #  芳香環が連なる部分は剛直で、柔軟鎖として扱うと長い gap を過小評価する。
+    RIGID_SEGMENT_A = 14.1  # m-フェニレン + トリアゾール + DBCO
+    SI_CONTOUR_A   = 4.8    # 柔軟な接続部のみ (CH2-O 2.4 + アミド 2.4)
     # 末端修飾 1 箇所あたりの寄与 [Å]。末端からホスホジエステルを 1 つ介して
     # NH2 / DBCO を生やす場合、ホスホジエステル ~4 + アミノヘキシル or
     # DBCO-トリアゾール ~5-10 で 9 Å 程度。両端ぶんが contour に乗る。
@@ -503,16 +510,40 @@ def _wlc_norm(Llp, n=400):
         _WLCN[key] = acc * h / 3.0
     return _WLCN[key]
 
-def ceff_wlc(r_A, contour_A):
-    """テザー末端間の実効濃度 [M]。理想 Gauss 鎖と違い r -> L_c で正しく 0 に落ちる。"""
-    if contour_A <= 0 or r_A <= 0 or r_A >= contour_A:
+def _g_flex(s, Lc):
+    """柔軟部のみの末端間体積密度 [1/Å^3]"""
+    if Lc <= 0 or s <= 0 or s >= Lc:
         return 0.0
-    Llp = contour_A / CFG.EO_PERSIST_A
-    Z = _wlc_norm(Llp)
-    if Z <= 0:
+    Llp = Lc / CFG.EO_PERSIST_A
+    Zn = _wlc_norm(Llp)
+    if Zn <= 0:
         return 0.0
-    P_r = _wlc_shape(r_A / contour_A, Llp) / (Z * contour_A)
-    return P_r / (4 * math.pi * r_A * r_A) * 1e27 / AVOGADRO
+    return _wlc_shape(s / Lc, Llp) / (Zn * Lc) / (4 * math.pi * s * s)
+
+
+def ceff_wlc(r_A, contour_A, rigid_A=None, n=120):
+    """
+    テザー末端間の実効濃度 [M]。
+
+    テザーの一部が剛直 (芳香環の連なり) な場合、全体を柔軟鎖として扱うと
+    長いスパンでの到達性を大きく過小評価する。剛直部を向きの自由な
+    ロッドとみなし、柔軟部の分布と球面平均で畳み込む。
+    rigid_A=0 なら従来どおり純粋な WLC。
+    """
+    rigid = CFG.RIGID_SEGMENT_A if rigid_A is None else rigid_A
+    flex = contour_A - rigid
+    if contour_A <= 0 or r_A <= 0 or r_A >= contour_A or flex <= 0:
+        return 0.0
+    if rigid <= 0:
+        return _g_flex(r_A, flex) * 1e27 / AVOGADRO
+    acc = 0.0
+    for i in range(n + 1):
+        u = -1.0 + 2.0 * i / n
+        s = math.sqrt(max(r_A * r_A + rigid * rigid - 2 * r_A * rigid * u, 1e-12))
+        w = 1 if i in (0, n) else (4 if i % 2 else 2)
+        acc += w * _g_flex(s, flex)
+    acc *= (2.0 / n) / 3.0 / 2.0
+    return acc * 1e27 / AVOGADRO
 
 def optimize_linker(gap_nt, dk=None):
     """
@@ -524,7 +555,8 @@ def optimize_linker(gap_nt, dk=None):
     r_max = required_span(gap_nt, CFG.RISE_SS_MAX_A, dk)
     scan = []
     for n in CFG.EO_SCAN:
-        c = n * CFG.EO_CONTOUR_A + CFG.SI_CONTOUR_A + 2 * CFG.TERM_PER_END_A
+        c = (n * CFG.EO_CONTOUR_A + CFG.SI_CONTOUR_A
+             + CFG.RIGID_SEGMENT_A + 2 * CFG.TERM_PER_END_A)
         if c > r_req:
             scan.append((n, c, ceff_wlc(r_req, c)))
     if not scan:
