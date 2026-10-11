@@ -86,6 +86,9 @@ class CFG:
     # must_cover の窓幅で割る方式だと窓幅という恣意的な値が予測 ON/OFF を決めて
     # しまいゾーン間が比較できなくなるため、絶対長で頭打ちにする。
     REQ_COVER_NT = 6
+    # マスクによる誘起構造変化を監視する機能要素 (name, start, end)。
+    # 自分が覆っていない要素についてのみ計算する。
+    WATCH_ELEMENTS = [("cap15", 1, 15), ("kozakAUG", 46, 56)]
 
     # ---- マスク鎖 --------------------------------------------------------
     ARM_LENGTHS = range(6, 14)      # 各腕の長さ探索範囲 [nt]
@@ -317,17 +320,23 @@ def intermolecular_dg(a, b):
 _OT_CACHE = {}
 
 def best_offtarget_dg(masker, exclude):
-    """標的上の意図外サイトとの最良ハイブリ ΔG。"""
+    """
+    意図外サイトとの最良ハイブリ ΔG。
+    FULL_MRNA が与えられていれば全長に対して走査する。無細胞系の反応液には
+    全長 mRNA が入るので、83 nt だけを見ていたのでは off-target を見落とす。
+    exclude は標的座標なので、折り畳み座標へ OFFSET を足して比較する。
+    """
     key = (masker, exclude, CFG.DDG_OME_PER_NT)
     if key in _OT_CACHE:
         return _OT_CACHE[key]
     L = len(masker)
+    ex_a, ex_b = exclude[0] + OFFSET, exclude[1] + OFFSET
     best = 0.0
-    for s in range(0, N_T - L + 1):
-        a, b = s + 1, s + L
-        if overlap_len(a, b, *exclude) > 0:
+    for i in range(0, len(FOLD_SEQ) - L + 1):
+        a, b = i + 1, i + L
+        if overlap_len(a, b, ex_a, ex_b) > 0:
             continue
-        e = RNA.duplexfold(masker, TARGET[s:s + L]).energy
+        e = RNA.duplexfold(masker, FOLD_SEQ[i:i + L]).energy
         if CFG.ALL_2OME:
             e += L * CFG.DDG_OME_PER_NT
         best = min(best, e)
@@ -471,6 +480,34 @@ def solve_two_site(Tt, At, Bt, K1, K2, w):
 
     T0, TA, TB, TAB = species(a, b)
     return dict(T=T0 / Tt, TA=TA / Tt, TB=TB / Tt, TAB=TAB / Tt)
+
+
+def induced_access_change(sites, element):
+    """
+    マスクが結合したときに、別の機能要素のアクセシビリティがどう変わるか。
+
+    返り値 < 0 : マスクによってその要素が「開く」(構造が壊れる)
+    返り値 > 0 : マスクによってその要素に新しい構造ができ、より閉じる
+
+    どちらも実験の交絡要因になる。例えば cap を塞いだ結果 AUG が開いて
+    翻訳が上がれば、「cap のマスクが効かなかった」のか「副作用で AUG が
+    開いた」のか区別できない。
+    マスク鎖に占有された領域は分子内対合に使えないので、強制 unpaired 制約が
+    結合状態の正しい表現になっている。
+    """
+    free = dg_open([element])
+    cond = dg_open(list(sites) + [element]) - dg_open(list(sites))
+    return cond - free
+
+
+def residence_time_s(dG, k_on=1.0e6):
+    """
+    k_off = k_on * Kd から OFF 状態の滞留半減期を出す [s]。
+    翻訳反応時間 (1-2 h) と比べて十分長いかを見るための目安。
+    k_on は 2'-OMe/RNA の典型値 1e6 M^-1 s^-1 を仮定 (桁の目安)。
+    """
+    k_off = k_on * kd_from_dg(dG)
+    return math.log(2) / k_off if k_off > 0 else float("inf")
 
 
 # =============================================================================
@@ -636,6 +673,15 @@ def evaluate(zone, a1, b1, a2, b2):
         reaches_extended=lk["reaches_extended"],
         C_eff_mM=round(lk["ceff"] * 1e3, 3), dG_link=round(lk["dG_link"], 2),
         cov_element_nt=cov_nt,
+        # OFF 状態の滞留半減期 [min]。翻訳反応時間より十分長い必要がある
+        t_half_off_min=round(residence_time_s(dG_biv) / 60.0, 1),
+        t_half_mono_s=round(min(residence_time_s(dG_mono_up),
+                                residence_time_s(dG_mono_dn)), 3),
+        # 他の機能要素への誘起構造変化 (交絡要因の検出)
+        **{f"induced_{nm}": round(
+               induced_access_change([(a1, b1), (a2, b2)], (ea, eb)), 2)
+           for nm, ea, eb in CFG.WATCH_ELEMENTS
+           if overlap_len(a1, b1, ea, eb) == 0 and overlap_len(a2, b2, ea, eb) == 0},
     )
     rec.update(predict_on_off(rec))
     rec["construct"] = f"5'-{m_dn}-[PEG{lk['n_eo']}+SI]-{m_up}-3'"
@@ -682,6 +728,69 @@ def rank(df):
     d["score"]  = (0.40 * d["_onoff"] + 0.25 * d["_off"]
                    + 0.20 * d["_on"] + 0.15 * d["_cov"]).round(4)
     return d.drop(columns=[c for c in d.columns if c.startswith("_")])
+
+
+def positional_scan(region=None, gaps=(2, 3, 4), arms=range(7, 13)):
+    """
+    ゾーン境界を使わずに、マスクのフットプリント位置を 5'UTR 全域で動かし、
+    各位置で到達可能な「スイッチ品質」の上限を出す。
+
+    ゾーンの region は私が手で引いた恣意的な値であり、その中だけを探索して
+    いては境界の妥当性を検証できない。この関数はゾーン定義から独立に
+    「どの位置なら良いスイッチが組めるか」を出すので、ゾーンの切り方が
+    妥当だったか、取りこぼした領域がないかを確認できる。
+
+    スイッチ品質 S = occ_off * (1 - occ_on)  (0-1、1 が理想)
+      eps に依存しない = 翻訳阻害効率の仮定を含まない純粋な熱力学指標。
+      「塞げるか」と「外れるか」は別の軸なので、eps の仮定と分離して見る。
+    """
+    lo, hi = region or (1, max(z["region"][1] for z in CFG.ZONES))
+    probe = dict(name="_scan", region=(lo, hi), must_cover=(lo, hi), eps=0.9)
+    ZONE_BY_NAME[probe["name"]] = probe   # predict_on_off が名前で引くため
+    best = {}
+    for L1 in arms:
+        for a1 in range(lo, hi - L1 + 2):
+            b1 = a1 + L1 - 1
+            for g in gaps:
+                a2 = b1 + 1 + g
+                for L2 in arms:
+                    b2 = a2 + L2 - 1
+                    if b2 > hi:
+                        continue
+                    rec, _ = evaluate(probe, a1, b1, a2, b2)
+                    if rec is None:
+                        continue
+                    S = rec["occ_off"] * (1 - rec["occ_on"])
+                    ctr = (a1 + b2) // 2
+                    if ctr not in best or S > best[ctr]["S"]:
+                        best[ctr] = dict(center=ctr, S=round(S, 4),
+                                         occ_off=rec["occ_off"], occ_on=rec["occ_on"],
+                                         span=f"{a1}-{b1}/{a2}-{b2}",
+                                         L_up=L1, L_down=L2, gap=g,
+                                         ddG_coop=rec["ddG_coop"])
+    return pd.DataFrame(sorted(best.values(), key=lambda r: r["center"]))
+
+
+def uncovered_peaks(scan_df, s_min=0.90):
+    """
+    位置スキャンで見つかった良い位置のうち、どのゾーンにも入っていないものを
+    列挙する。ゾーンの region は手で引いた恣意的な値なので、境界をまたぐ
+    良い位置を取りこぼしていないかをここで検証する。
+    """
+    out = []
+    for _, r in scan_df[scan_df.S >= s_min].iterrows():
+        a1 = int(r["span"].split("/")[0].split("-")[0])
+        b2 = int(r["span"].split("/")[1].split("-")[1])
+        inside = [z["name"] for z in CFG.ZONES
+                  if a1 >= z["region"][0] and b2 <= z["region"][1]]
+        if not inside:
+            out.append(dict(span=r["span"], center=r["center"], S=r["S"],
+                            occ_off=r["occ_off"], occ_on=r["occ_on"],
+                            ddG_coop=r["ddG_coop"],
+                            straddles="/".join(
+                                z["name"] for z in CFG.ZONES
+                                if overlap_len(a1, b2, *z["region"]) > 0) or "-"))
+    return pd.DataFrame(out)
 
 
 # =============================================================================
@@ -912,6 +1021,36 @@ def plots(all_df):
     plt.tight_layout(); plt.show()
 
 
+def plot_positional(scan, picks=None):
+    """位置スキャンの landscape。ゾーン境界の妥当性を目で確認するための図。"""
+    if not HAVE_PLT or scan is None or scan.empty:
+        return
+    fig, ax = plt.subplots(figsize=(10.5, 4.6))
+    colors = {"cap": "tab:blue", "mid": "tab:orange", "kozak": "tab:green"}
+    for z in CFG.ZONES:
+        a, b = z["region"]
+        ax.axvspan(a, b, alpha=.10, color=colors.get(z["name"], "grey"))
+        ax.text((a + b) / 2, 1.04, z["name"], ha="center", fontsize=9,
+                color=colors.get(z["name"], "grey"))
+    ax.plot(scan["center"], scan["S"], "o-", color="k", ms=4, lw=1.2,
+            label="best achievable switch quality S")
+    ax.axhline(0.90, color="r", ls="--", lw=1, label="S = 0.90")
+    for _, r in scan.nlargest(3, "S").iterrows():
+        ax.annotate(r["span"], (r["center"], r["S"]), textcoords="offset points",
+                    xytext=(0, -16), ha="center", fontsize=7.5)
+    for nm, a, b in CFG.WATCH_ELEMENTS:
+        ax.axvspan(a, b, ymin=0, ymax=0.045, color="purple", alpha=.55)
+        ax.text((a + b) / 2, -0.055, nm, ha="center", fontsize=7, color="purple")
+    ax.set_xlabel("center of the masked footprint (nt, 1-based)")
+    ax.set_ylabel("S = occ_OFF x (1 - occ_ON)")
+    ax.set_ylim(-0.08, 1.12)
+    ax.grid(alpha=.3)
+    ax.legend(fontsize=8, loc="lower center")
+    ax.set_title("Switch quality landscape, independent of zone boundaries and of eps\n"
+                 "(gaps = no viable pair exists at that position)")
+    plt.tight_layout(); plt.show()
+
+
 # =============================================================================
 # 11. MAIN
 # =============================================================================
@@ -958,6 +1097,26 @@ def main():
     if not all_df:
         print("\n全ゾーンで候補ゼロ。CFG を見直してください。")
         return
+
+    # --- ゾーン定義から独立した位置スキャン ---
+    print("\n" + "=" * 104)
+    print("位置スキャン (ゾーン境界を使わない検証)")
+    print("=" * 104)
+    print("region は手で引いた恣意的な値なので、その中だけを探索していては")
+    print("境界の妥当性を検証できない。フットプリント位置を 5'UTR 全域で動かし、")
+    print("各位置で到達可能なスイッチ品質 S = occ_off * (1 - occ_on) の上限を出す。")
+    print("S は eps に依存しない = 翻訳阻害効率の仮定を含まない純粋な熱力学指標。\n")
+    scan = positional_scan()
+    scan.to_csv(os.path.join(CFG.OUTDIR, "positional_scan.csv"), index=False)
+    print(scan.to_string(index=False))
+
+    unc = uncovered_peaks(scan)
+    if not unc.empty:
+        print("\n[重要] どのゾーンにも収まらない良好な位置が見つかりました。")
+        print("       ゾーン境界の引き方で取りこぼしています:")
+        print(unc.to_string(index=False))
+    else:
+        print("\n良好な位置 (S >= 0.90) はすべていずれかのゾーンに収まっています。")
     allcat = pd.concat(all_df, ignore_index=True)
     allcat.to_csv(os.path.join(CFG.OUTDIR, "zones_all.csv"), index=False)
 
@@ -966,11 +1125,21 @@ def main():
     print("=" * 104)
     cmp_cols = ["zone", "MASK1", "MASK2", "L_up", "L_down", "gap_nt", "n_EO",
                 "ddG_coop", "dG37_biv", "Kd_biv_nM", "Tm_mono_up", "Tm_mono_down",
-                "occ_off", "occ_on", "block_full", "on_off", "on_off_ceiling", "cov_element_nt"]
-    print(pd.DataFrame(picks)[cmp_cols].to_string(index=False))
+                "occ_off", "occ_on", "t_half_off_min", "t_half_mono_s",
+                "block_full", "on_off", "on_off_ceiling", "cov_element_nt"]
+    cmp_df = pd.DataFrame(picks)
+    ind_cols = [c for c in cmp_df.columns if c.startswith("induced_")]
+    print(cmp_df[cmp_cols + ind_cols].to_string(index=False))
+    print("\n  t_half_off_min : OFF 複合体の解離半減期。翻訳反応時間 (60-120 min) と")
+    print("                   同程度以下だと、平衡が保たれない状況で OFF が漏れる。")
+    print("  t_half_mono_s  : 切断後の解離半減期。短いほど ON への切替が速い。")
+    print("  induced_*      : マスクが覆っていない機能要素への誘起構造変化。")
+    print("                   負 = その要素が開く / 正 = 新たな構造ができ閉じる。")
+    print("                   |値| が大きいほど実験解釈の交絡要因になる。")
 
     order_sheet(picks)
     plots(allcat)
+    plot_positional(scan, picks)
 
     print("\n" + "=" * 104)
     print("出力ファイル:")
