@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+# スクリーニングスクリプトの生成物（実行のたびに再生成される）
+zone_*.csv
+zones_all.csv
+positional_scan.csv
+stage0_windows.csv
+stage12_pairs.csv
+stage3_lengths.csv
