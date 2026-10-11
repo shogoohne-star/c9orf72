@@ -78,7 +78,10 @@ class CFG:
              eps=0.90, note="43S ロード / eIF4F 結合の阻害"),
         dict(name="mid",   region=(16, 45), must_cover=(22, 38),
              eps=0.60, note="スキャニング阻害。43S のヘリカーゼ活性で解かれうる"),
-        dict(name="kozak", region=(38, 62), must_cover=(48, 56),
+        # CDS 側に 66 まで広げてある。38-62 に切っていたときより良い候補
+        # (51-59/60-66) がここに入る。開始コドン認識の阻害が目的なので、
+        # CDS 冒頭を覆うこと自体は問題ない。
+        dict(name="kozak", region=(38, 66), must_cover=(48, 56),
              eps=0.90, note="Kozak + AUG。開始コドン認識の阻害"),
     ]
     EPS_SWEEP = [0.5, 0.7, 0.9, 0.99]   # ON/OFF を eps の関数として出す
@@ -89,6 +92,9 @@ class CFG:
     # マスクによる誘起構造変化を監視する機能要素 (name, start, end)。
     # 自分が覆っていない要素についてのみ計算する。
     WATCH_ELEMENTS = [("cap15", 1, 15), ("kozakAUG", 46, 56)]
+    # 開始コドン。Kozak ゾーンでは 3 塩基すべてを覆えているかを明示的に出す
+    # (部分被覆だと機能要素のカバー率は満たしても開始コドン認識を阻害できない)
+    START_CODON = (54, 56)
 
     # ---- マスク鎖 --------------------------------------------------------
     ARM_LENGTHS = range(6, 14)      # 各腕の長さ探索範囲 [nt]
@@ -857,6 +863,10 @@ def evaluate(zone, a1, b1, a2, b2):
         reaches_extended=lk["reaches_extended"],
         C_eff_mM=round(lk["ceff"] * 1e3, 3), dG_link=round(lk["dG_link"], 2),
         cov_element_nt=cov_nt,
+        AUG_cov=("full" if set(range(*(CFG.START_CODON[0], CFG.START_CODON[1] + 1)))
+                 <= (set(range(a1, b1 + 1)) | set(range(a2, b2 + 1)))
+                 else ("partial" if set(range(CFG.START_CODON[0], CFG.START_CODON[1] + 1))
+                       & (set(range(a1, b1 + 1)) | set(range(a2, b2 + 1))) else "none")),
         dG_coax=round(coax, 2), dG_steric=round(steric, 2),
         dG_elec_arm=round(el_arm1 + el_arm2, 3), dG_elec_biv=round(el_biv, 3),
         tether=CFG.TETHER, tether_dk=dk,
