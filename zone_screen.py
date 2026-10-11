@@ -789,14 +789,19 @@ def positional_scan(region=None, gaps=None, arms=None):
     return pd.DataFrame(sorted(best.values(), key=lambda r: r["center"]))
 
 
-def uncovered_peaks(scan_df, s_min=0.90):
+def uncovered_peaks(scan_df, zone_best_S=None, s_min=0.90):
     """
     位置スキャンで見つかった良い位置のうち、どのゾーンにも入っていないものを
     列挙する。ゾーンの region は手で引いた恣意的な値なので、境界をまたぐ
     良い位置を取りこぼしていないかをここで検証する。
+
+    zone_best_S を渡すと、ゾーン内で実際に見つかった最良 S を上回るものだけに
+    絞る。単に「ゾーン外にも S>=0.90 の場所がある」だけでは行動に繋がらない
+    (ゾーン内の方が良いなら取りこぼしではない)。
     """
+    thr = s_min if zone_best_S is None else max(s_min, zone_best_S)
     out = []
-    for _, r in scan_df[scan_df.S >= s_min].iterrows():
+    for _, r in scan_df[scan_df.S >= thr].iterrows():
         a1 = int(r["span"].split("/")[0].split("-")[0])
         b2 = int(r["span"].split("/")[1].split("-")[1])
         inside = [z["name"] for z in CFG.ZONES
@@ -1128,13 +1133,16 @@ def main():
     scan.to_csv(os.path.join(CFG.OUTDIR, "positional_scan.csv"), index=False)
     print(scan.to_string(index=False))
 
-    unc = uncovered_peaks(scan)
+    zone_best_S = max(r["occ_off"] * (1 - r["occ_on"]) for r in picks)
+    print(f"\nゾーン内で実際に得られた最良 S = {zone_best_S:.4f}")
+    unc = uncovered_peaks(scan, zone_best_S=zone_best_S)
     if not unc.empty:
-        print("\n[重要] どのゾーンにも収まらない良好な位置が見つかりました。")
+        print("[重要] ゾーン内の最良を上回る位置が、どのゾーンにも収まっていません。")
         print("       ゾーン境界の引き方で取りこぼしています:")
         print(unc.to_string(index=False))
     else:
-        print("\n良好な位置 (S >= 0.90) はすべていずれかのゾーンに収まっています。")
+        print("ゾーン外に、ゾーン内の最良を上回る位置はありません。")
+        print("= 現在のゾーン境界で取りこぼしは生じていない。")
     allcat = pd.concat(all_df, ignore_index=True)
     allcat.to_csv(os.path.join(CFG.OUTDIR, "zones_all.csv"), index=False)
 
