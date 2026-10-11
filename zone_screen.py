@@ -196,7 +196,7 @@ class CFG:
     ROB_TOP_K        = 5             # 各ゾーンの上位何件を解析するか
     ROB_OME          = [-0.05, -0.10, -0.14, -0.20, -0.25]
     ROB_SI           = [6.0, 9.0, 12.0, 15.0]
-    ROB_EXCESS       = [2.0, 5.0, 10.0, 50.0]
+    ROB_EXCESS       = [5.0, 10.0, 30.0]
 
     TOP_N   = 12
     OUTDIR  = "/content" if os.path.isdir("/content") else "."
@@ -1024,6 +1024,62 @@ def robustness(zone, top):
     # 最悪条件での ON/OFF で同点を割る
     ).round(3).sort_values(["ok_frac", "onoff_min"], ascending=[False, False])
     return g, d
+
+
+def candidates_report(zone, n_top=6, gaps=range(0, 6), rob=True):
+    """
+    1 ゾーンぶんの「位置 x gap」候補表を出す。
+    各 gap の最良と全体上位を混ぜ、重複を除いて S 降順で返す。
+    リンカー長は各候補ごとに最適化済みなので、span_A / span_max_A を見て
+    後からリンカーを設計すればよい。
+    """
+    df, _ = screen_zone(zone)
+    df = df[df.cov_element_nt >= CFG.REQ_COVER_NT].copy()
+    if df.empty:
+        return pd.DataFrame()
+    df["S"] = df.occ_off * (1 - df.occ_on)
+    picks = []
+    for g in gaps:
+        d = df[df.gap_nt == g]
+        if not d.empty:
+            picks.append(d.loc[d.S.idxmax()])
+    picks += [r for _, r in df.nlargest(n_top, "S").iterrows()]
+
+    seen, rows = set(), []
+    for b in picks:
+        key = (int(b.up_start), int(b.up_end), int(b.down_start), int(b.down_end))
+        if key in seen:
+            continue
+        seen.add(key)
+        ok, smin = (robust_point(zone, *key) if rob else (np.nan, np.nan))
+        rows.append(dict(
+            sites=f"{key[0]}-{key[1]} / {key[2]}-{key[3]}", gap=int(b.gap_nt),
+            L=f"{int(b.L_up)}+{int(b.L_down)}", MASK1=b.MASK1, MASK2=b.MASK2,
+            span_A=b.span_req_A, span_max_A=b.span_req_max_A,
+            Tm1=b.Tm_mono_up, Tm2=b.Tm_mono_down, dG_biv=b.dG37_biv,
+            occ_off=round(b.occ_off, 4), occ_on=round(b.occ_on, 4),
+            S=round(b.S, 4), on_off=b.on_off,
+            ok_frac=round(ok, 2), S_min=round(smin, 3)))
+    return pd.DataFrame(rows).sort_values("S", ascending=False)
+
+
+def robust_point(zone, a1, b1, a2, b2):
+    """1 候補について 2'-OMe 補正 x mask 比 x 末端修飾長を振り、頑健性を返す。"""
+    keep = (CFG.DDG_OME_PER_NT, CFG.MASK_EXCESS, CFG.TERM_PER_END_A)
+    ok = tot = 0
+    smin = float("inf")
+    for ome, exc, term in itertools.product(CFG.ROB_OME, CFG.ROB_EXCESS,
+                                            [6.0, 9.0, 12.0]):
+        CFG.DDG_OME_PER_NT, CFG.MASK_EXCESS, CFG.TERM_PER_END_A = ome, exc, term
+        r, _ = evaluate(zone, a1, b1, a2, b2)
+        tot += 1
+        if r is None:
+            continue
+        smin = min(smin, r["occ_off"] * (1 - r["occ_on"]))
+        if r["occ_off"] >= CFG.OCC_OFF_MIN and r["occ_on"] <= CFG.OCC_ON_MAX:
+            ok += 1
+    CFG.DDG_OME_PER_NT, CFG.MASK_EXCESS, CFG.TERM_PER_END_A = keep
+    return (ok / tot if tot else 0.0), (smin if smin < float("inf") else np.nan)
 
 
 # =============================================================================
