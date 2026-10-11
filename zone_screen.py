@@ -109,8 +109,27 @@ class CFG:
     # ---- リンカー (PEG 系) -----------------------------------------------
     EO_CONTOUR_A   = 3.5
     EO_PERSIST_A   = 3.8
-    SI_CONTOUR_A   = 12.0   # 自壊性ユニットの contour length [Å]。要実測/要見積り
-    TERM_LINK_A    = 5.0
+    SI_CONTOUR_A   = 12.0   # 自壊性コア (デンドロン等) の contour length [Å]
+    # 末端修飾 1 箇所あたりの寄与 [Å]。末端からホスホジエステルを 1 つ介して
+    # NH2 / DBCO を生やす場合、ホスホジエステル ~4 + アミノヘキシル or
+    # DBCO-トリアゾール ~5-10 で 9 Å 程度。両端ぶんが contour に乗る。
+    TERM_PER_END_A = 9.0
+    TERM_LINK_A    = 18.0   # = TERM_PER_END_A * 2 (後方互換のため保持)
+
+    # --- 係留する末端の選択 ---------------------------------------------
+    # マスク鎖は標的に逆平行で結合するので、Mask1 の 5' 末端は標的 b1 と、
+    # 3' 末端は a1 と対合する (Mask2 も同様)。どの末端をコアに繋ぐかで
+    # 必要スパンが変わるだけで、4 通りとも幾何学的に成立する。
+    #   "inner"  : M1-5' / M2-3'  ギャップに面する内側同士。スパン最小
+    #   "3prime" : M1-3' / M2-3'  両腕とも 3' 末端。3'-アミノ CPG で合成容易
+    #   "5prime" : M1-5' / M2-5'  両腕とも 5' 末端
+    #   "outer"  : M1-3' / M2-5'  両端の外側同士。スパン最大
+    TETHER = "inner"
+
+    # A 型 RNA 二重鎖の螺旋パラメータ (必要スパンの幾何計算用)
+    HELIX_RISE_A  = 2.8     # Å/bp
+    HELIX_TWIST_D = 32.7    # deg/bp (11 bp/turn)
+    HELIX_PRAD_A  = 8.8     # リン酸バックボーンの螺旋半径 [Å]
     EO_SCAN        = range(0, 61)
     CEFF_FRAC      = 0.50
     REQUIRE_EXTENDED_REACH = True   # ギャップ伸長時にも届く長さのみ推奨
@@ -360,7 +379,39 @@ def best_offtarget_dg(masker, exclude):
 # =============================================================================
 # 5. リンカー / アビディティ (半屈曲性鎖モデル)
 # =============================================================================
-def required_span(gap_nt, rise):
+def helix_sep(dk):
+    """
+    同一鎖のバックボーン上で dk 塩基対離れた 2 点の直線距離 [Å] (A 型二重鎖)。
+    軸方向の伸びと螺旋のねじれの両方を含む。11 bp でほぼ 1 回転するので、
+    dk=11 付近では角度差がほぼ 0 に戻り距離は軸方向成分だけになる。
+    """
+    dz = dk * CFG.HELIX_RISE_A
+    dth = math.radians(dk * CFG.HELIX_TWIST_D)
+    r = CFG.HELIX_PRAD_A
+    return math.sqrt(dz * dz + 2 * r * r * (1 - math.cos(dth)))
+
+
+def tether_dk(a1, b1, a2, b2, topology=None):
+    """
+    係留する 2 末端の間に何塩基対あるか。マスク鎖は逆平行なので
+    Mask1 の 5' 末端 <-> 標的 b1、3' 末端 <-> 標的 a1 で対合する。
+    """
+    t = CFG.TETHER if topology is None else topology
+    p = {"inner": (b1, a2), "3prime": (a1, a2),
+         "5prime": (b1, b2), "outer": (a1, b2)}[t]
+    return abs(p[1] - p[0])
+
+
+def required_span(gap_nt, rise, dk=None):
+    """
+    テザーが張るべき末端間距離 [Å]。
+    dk を渡せば螺旋幾何で計算する (係留末端の選択に対応)。
+    渡さない場合は内-内係留を仮定した簡易式 (後方互換)。
+    rise は簡易式でのギャップ ssRNA の 1 nt あたり伸長。
+    """
+    if dk is not None:
+        # ギャップ部が伸びた場合に備え、簡易式との大きい方を取る
+        return max(helix_sep(dk), CFG.NICK_OFFSET_A + gap_nt * rise)
     return CFG.NICK_OFFSET_A + gap_nt * rise
 
 def _wlc_shape(x, L_over_lp):
@@ -391,17 +442,17 @@ def ceff_wlc(r_A, contour_A):
     P_r = _wlc_shape(r_A / contour_A, Llp) / (Z * contour_A)
     return P_r / (4 * math.pi * r_A * r_A) * 1e27 / AVOGADRO
 
-def optimize_linker(gap_nt):
+def optimize_linker(gap_nt, dk=None):
     """
     C_eff(L_c) は極端に浅い最大しか持たないので「最大化」では無意味に長い
     リンカーが選ばれる。最大値の CEFF_FRAC に達する最短長を推奨値とし、
     さらにギャップ伸長時にも届くことを要求する (余裕のコストはほぼゼロ)。
     """
-    r_req = required_span(gap_nt, CFG.RISE_SS_A)
-    r_max = required_span(gap_nt, CFG.RISE_SS_MAX_A)
+    r_req = required_span(gap_nt, CFG.RISE_SS_A, dk)
+    r_max = required_span(gap_nt, CFG.RISE_SS_MAX_A, dk)
     scan = []
     for n in CFG.EO_SCAN:
-        c = n * CFG.EO_CONTOUR_A + CFG.SI_CONTOUR_A + CFG.TERM_LINK_A
+        c = n * CFG.EO_CONTOUR_A + CFG.SI_CONTOUR_A + 2 * CFG.TERM_PER_END_A
         if c > r_req:
             scan.append((n, c, ceff_wlc(r_req, c)))
     if not scan:
@@ -645,7 +696,8 @@ def evaluate(zone, a1, b1, a2, b2):
     if (best_offtarget_dg(m_dn, (a2, b2)) - dG_dn) < CFG.OFFTARGET_MARGIN:
         return None, "offtarget"
 
-    lk = optimize_linker(gap)
+    dk = tether_dk(a1, b1, a2, b2)
+    lk = optimize_linker(gap, dk)
     if lk is None:
         return None, "linker"
 
@@ -697,6 +749,7 @@ def evaluate(zone, a1, b1, a2, b2):
         C_eff_mM=round(lk["ceff"] * 1e3, 3), dG_link=round(lk["dG_link"], 2),
         cov_element_nt=cov_nt,
         dG_coax=round(coax, 2), dG_steric=round(steric, 2),
+        tether=CFG.TETHER, tether_dk=dk,
         # OFF 状態の滞留半減期 [min]。翻訳反応時間より十分長い必要がある
         t_half_off_min=round(residence_time_s(dG_biv) / 60.0, 1),
         t_half_mono_s=round(min(residence_time_s(dG_mono_up),
