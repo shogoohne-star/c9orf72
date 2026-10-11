@@ -131,8 +131,17 @@ class CFG:
     SELF_FOLD_MAX   = -1.5
     CROSS_DIMER_MAX = -4.0
     OFFTARGET_MARGIN = 3.0
-    DG_COAX         = -1.3
-    COAX_GAP_MAX    = 1
+    # coaxial stacking。nick (gap 0) では満額、1-nt ギャップでは大幅に減衰する。
+    # 以前は gap 0 と 1 に同額を与えており、gap 1 を過大評価していた。
+    DG_COAX         = -1.3                      # gap 0 (nick) での値 [kcal/mol]
+    COAX_FRAC_BY_GAP = {0: 1.00, 1: 0.35}       # これ以外の gap では 0
+
+    # リンカー接合部の立体障害。自壊性コアは芳香環系で van der Waals 幅が
+    # 5-7 Å あり、nick 近傍の溝に押し込まれる。さらに重要なのは、
+    # バイオマーカーが接近すべきトリガー部位が RNA 表面に遮蔽されること。
+    # 実測値が無いので既定は 0 とし、感度解析で「いくら以上なら gap を
+    # 開けるべきか」の閾値を出す形にする。二価状態にのみ効く。
+    STERIC_DG_BY_GAP = {}                       # 例: {0: 1.5, 1: 0.8, 2: 0.2}
 
     # ---- 目標値 (ランキングには使わず、情報として併記) ---------------------
     TM_MONO_TARGET = (18.0, 33.0)
@@ -645,7 +654,8 @@ def evaluate(zone, a1, b1, a2, b2):
     o_up, o_dn = dg_open([(a1, b1)]), dg_open([(a2, b2)])
     o_both = dg_open([(a1, b1), (a2, b2)])
 
-    coax = CFG.DG_COAX if gap <= CFG.COAX_GAP_MAX else 0.0
+    coax = CFG.DG_COAX * CFG.COAX_FRAC_BY_GAP.get(gap, 0.0)
+    steric = CFG.STERIC_DG_BY_GAP.get(gap, 0.0)   # >= 0、二価状態を不安定化
 
     # 一価 (切断後に各腕が単独で結合するときの ΔG)
     dG_mono_up = dG_up + o_up - s_up
@@ -656,7 +666,7 @@ def evaluate(zone, a1, b1, a2, b2):
     ddG_coop = (o_both - o_up - o_dn) + coax
 
     # 二価 (切断前): 一価 2 つ + 協同性 + アビディティ項
-    dG_biv = dG_mono_up + dG_mono_dn + ddG_coop - cross + lk["dG_link"]
+    dG_biv = dG_mono_up + dG_mono_dn + ddG_coop - cross + lk["dG_link"] + steric
 
     ct = CFG.C_MRNA * (1 + CFG.MASK_EXCESS)
     rec = dict(
@@ -686,6 +696,7 @@ def evaluate(zone, a1, b1, a2, b2):
         reaches_extended=lk["reaches_extended"],
         C_eff_mM=round(lk["ceff"] * 1e3, 3), dG_link=round(lk["dG_link"], 2),
         cov_element_nt=cov_nt,
+        dG_coax=round(coax, 2), dG_steric=round(steric, 2),
         # OFF 状態の滞留半減期 [min]。翻訳反応時間より十分長い必要がある
         t_half_off_min=round(residence_time_s(dG_biv) / 60.0, 1),
         t_half_mono_s=round(min(residence_time_s(dG_mono_up),
