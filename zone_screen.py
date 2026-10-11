@@ -162,6 +162,23 @@ class CFG:
     # 開けるべきか」の閾値を出す形にする。二価状態にのみ効く。
     STERIC_DG_BY_GAP = {}                       # 例: {0: 1.5, 1: 0.8, 2: 0.2}
 
+    # gap<=COAX_GAP では nick が Mask1-5' と Mask2-3' の間にできる。
+    # 係留末端によってはその nick 末端に置換基が付き、coaxial stacking を阻害する。
+    #   inner  : nick の 2 末端とも置換 -> ほぼ消失
+    #   3prime : Mask2-3' のみ置換      -> 半減
+    #   5prime : Mask1-5' のみ置換      -> 半減
+    #   outer  : どちらも素             -> 満額
+    COAX_LOSS_PER_SUBST = 0.5          # 置換 1 本あたり失われる割合
+
+    # --- リンカーリン酸の静電反発 -----------------------------------------
+    # 末端からホスホジエステルで NH2/DBCO を生やすと負電荷が 1 つ増える。
+    # Debye-Huckel で評価する。自分のマスク鎖との反発は結合前後で不変なので
+    # Kd に効かず、標的鎖との反発 (各腕) と相手腕との反発 (二価のみ) を使う。
+    ELEC_ON          = True
+    ELEC_Q_EFF       = 0.5     # 実効電荷 [e]。全電荷 1.0 と Manning 凝縮 0.25 の中間
+    ELEC_EPS         = 60.0    # 局所誘電率。バルク水 78、二重鎖近傍はより低い
+    ELEC_LINKER_OUT_A = 6.0    # リンカーリン酸が螺旋軸から外向きに出る距離
+
     # ---- 目標値 (ランキングには使わず、情報として併記) ---------------------
     TM_MONO_TARGET = (18.0, 33.0)
     OCC_OFF_MIN    = 0.95    # OFF 状態で目標としたい占有率
@@ -389,6 +406,61 @@ def helix_sep(dk):
     dth = math.radians(dk * CFG.HELIX_TWIST_D)
     r = CFG.HELIX_PRAD_A
     return math.sqrt(dz * dz + 2 * r * r * (1 - math.cos(dth)))
+
+
+_ELEC_CACHE = {}
+_E_CHG, _EPS0, _J2KCAL = 1.602176634e-19, 8.8541878128e-12, 6.02214076e23 / 4184.0
+
+def _phos(k, strand):
+    """塩基対 k のリン酸座標。strand 'm'=マスク鎖, 't'=標的鎖, 'L'=リンカー"""
+    th = math.radians(k * CFG.HELIX_TWIST_D)
+    r = CFG.HELIX_PRAD_A
+    if strand == "t":
+        th += math.radians(150.0)          # 相補鎖バックボーンの角度オフセット
+    elif strand == "L":
+        r += CFG.ELEC_LINKER_OUT_A
+    return (r * math.cos(th), r * math.sin(th), k * CFG.HELIX_RISE_A)
+
+
+def _dh(p, q, lam):
+    d = math.sqrt(sum((a - b) ** 2 for a, b in zip(p, q)))
+    if d < 1e-6:
+        return 0.0
+    qe = CFG.ELEC_Q_EFF
+    return ((qe * qe * _E_CHG * _E_CHG)
+            / (4 * math.pi * _EPS0 * CFG.ELEC_EPS * d * 1e-10)
+            * math.exp(-d / lam) * _J2KCAL)
+
+
+def linker_electrostatics(a1, b1, a2, b2):
+    """
+    末端に生やしたリンカーのリン酸 (負電荷 1) による静電反発 [kcal/mol]。
+    Debye-Huckel。3 成分に分解して返す:
+      arm1, arm2 : 標的鎖バックボーンとの反発。各腕の結合を弱める
+                   (一価にも二価にも効くので、スイッチ比には効かない)
+      biv        : 相手腕のバックボーンおよび相手リンカーとの反発。
+                   二価状態だけが払う = スイッチ窓を狭める
+    自分のマスク鎖との反発は結合前後で不変なので計上しない。
+    """
+    if not CFG.ELEC_ON:
+        return 0.0, 0.0, 0.0
+    key = (a1, b1, a2, b2, CFG.TETHER, CFG.ELEC_Q_EFF, CFG.ELEC_EPS)
+    if key in _ELEC_CACHE:
+        return _ELEC_CACHE[key]
+    lam = 3.04 / math.sqrt(na_equivalent())       # Debye 長 [Å], 25 C 1:1
+    P = {"a1": 0, "b1": b1 - a1, "a2": a2 - a1, "b2": b2 - a1}
+    k1, k2 = {"inner": ("b1", "a2"), "3prime": ("a1", "a2"),
+              "5prime": ("b1", "b2"), "outer": ("a1", "b2")}[CFG.TETHER]
+    L1, L2 = _phos(P[k1], "L"), _phos(P[k2], "L")
+    m1 = [_phos(k, "m") for k in range(0, P["b1"] + 1)]
+    m2 = [_phos(k, "m") for k in range(P["a2"], P["b2"] + 1)]
+    tg = [_phos(k, "t") for k in range(0, P["b2"] + 1)]
+    arm1 = sum(_dh(L1, p, lam) for p in tg)
+    arm2 = sum(_dh(L2, p, lam) for p in tg)
+    biv = (sum(_dh(L1, p, lam) for p in m2) + sum(_dh(L2, p, lam) for p in m1)
+           + _dh(L1, L2, lam))
+    _ELEC_CACHE[key] = (arm1, arm2, biv)
+    return arm1, arm2, biv
 
 
 def tether_dk(a1, b1, a2, b2, topology=None):
@@ -707,18 +779,23 @@ def evaluate(zone, a1, b1, a2, b2):
     o_both = dg_open([(a1, b1), (a2, b2)])
 
     coax = CFG.DG_COAX * CFG.COAX_FRAC_BY_GAP.get(gap, 0.0)
+    # nick 末端に付いた置換基による coax の阻害
+    n_subst = {"inner": 2, "3prime": 1, "5prime": 1, "outer": 0}[CFG.TETHER]
+    coax *= max(0.0, 1.0 - CFG.COAX_LOSS_PER_SUBST * n_subst)
     steric = CFG.STERIC_DG_BY_GAP.get(gap, 0.0)   # >= 0、二価状態を不安定化
+    el_arm1, el_arm2, el_biv = linker_electrostatics(a1, b1, a2, b2)
 
     # 一価 (切断後に各腕が単独で結合するときの ΔG)
-    dG_mono_up = dG_up + o_up - s_up
-    dG_mono_dn = dG_dn + o_dn - s_dn
+    dG_mono_up = dG_up + o_up - s_up + el_arm1
+    dG_mono_dn = dG_dn + o_dn - s_dn + el_arm2
 
     # 2 サイト同時結合の協同性。ΔG_open の非加算性がここに入る。
     #   ddG_coop < 0 なら正の協同性 (片方を開くともう片方も開く)
     ddG_coop = (o_both - o_up - o_dn) + coax
 
     # 二価 (切断前): 一価 2 つ + 協同性 + アビディティ項
-    dG_biv = dG_mono_up + dG_mono_dn + ddG_coop - cross + lk["dG_link"] + steric
+    dG_biv = (dG_mono_up + dG_mono_dn + ddG_coop - cross + lk["dG_link"]
+              + steric + el_biv)
 
     ct = CFG.C_MRNA * (1 + CFG.MASK_EXCESS)
     rec = dict(
@@ -749,6 +826,7 @@ def evaluate(zone, a1, b1, a2, b2):
         C_eff_mM=round(lk["ceff"] * 1e3, 3), dG_link=round(lk["dG_link"], 2),
         cov_element_nt=cov_nt,
         dG_coax=round(coax, 2), dG_steric=round(steric, 2),
+        dG_elec_arm=round(el_arm1 + el_arm2, 3), dG_elec_biv=round(el_biv, 3),
         tether=CFG.TETHER, tether_dk=dk,
         # OFF 状態の滞留半減期 [min]。翻訳反応時間より十分長い必要がある
         t_half_off_min=round(residence_time_s(dG_biv) / 60.0, 1),
