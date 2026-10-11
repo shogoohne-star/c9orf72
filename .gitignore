@@ -8,3 +8,7 @@ positional_scan.csv
 stage0_windows.csv
 stage12_pairs.csv
 stage3_lengths.csv
+
+# docx ビルドの中間生成物
+page-*.jpg
+*.pdf
