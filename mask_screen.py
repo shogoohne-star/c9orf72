@@ -86,6 +86,10 @@ class CFG:
     # C_eff は L_c に対して非常に浅い最大を持つため「最大化」で選ぶと
     # 無意味に長いリンカーが選ばれる。最大値の CEFF_FRAC に達する最短長を推奨値とする。
     CEFF_FRAC      = 0.50
+    # 推奨リンカーに、ギャップ ssRNA が完全伸長した場合でも届く長さを要求する。
+    # C_eff は n_EO に対してほぼ平坦（1-7 units で 45-100 mM）なので余裕を取る
+    # コストはほぼゼロ（switch で 0.3 log 程度）だが、短すぎる側は急峻に悪化する。
+    REQUIRE_EXTENDED_REACH = True
 
     # 末端間距離の見積り
     NICK_OFFSET_A  = 6.0     # ギャップ 0（nick）時の末端間距離 [Å]
@@ -454,7 +458,8 @@ def optimize_linker(gap_nt):
         scan.append((n_eo, contour, ceff_wlc(r_req, contour)))
 
     base = dict(n_eo=np.nan, n_eo_max=np.nan, contour=np.nan, ceff=0.0,
-                r_req=r_req, r_req_max=r_req_max, dG_link=99.0, at_bound=0)
+                r_req=r_req, r_req_max=r_req_max, reaches_extended=0,
+                dG_link=99.0, at_bound=0)
     if not scan:
         return base
 
@@ -462,12 +467,20 @@ def optimize_linker(gap_nt):
     if ce_max <= 0:
         return base
     thr = CFG.CEFF_FRAC * ce_max
-    n_rec, c_rec, ce_rec = next(z for z in scan if z[2] >= thr)
+    # 伸長時にも届く長さだけを推奨対象にする（満たす解が無ければ従来通り）
+    pool = scan
+    if CFG.REQUIRE_EXTENDED_REACH:
+        reach = [z for z in scan if z[1] >= r_req_max]
+        if reach:
+            pool = reach
+    cand = [z for z in pool if z[2] >= thr] or [max(pool, key=lambda z: z[2])]
+    n_rec, c_rec, ce_rec = cand[0]
 
     return dict(
         n_eo=n_rec, contour=c_rec, ceff=ce_rec,
         n_eo_max=n_max, ceff_max=ce_max,
         r_req=r_req, r_req_max=r_req_max,
+        reaches_extended=int(c_rec >= r_req_max),
         dG_link=-RT * math.log(ce_rec),
         # 最大値が走査範囲の端で得られている場合は EO_SCAN を広げる必要がある
         at_bound=int(n_rec >= max(CFG.EO_SCAN)),
@@ -639,7 +652,7 @@ def evaluate_pair(a1, b1, a2, b2):
         linker_contour_A=round(lk["contour"], 1),
         span_req_A=round(lk["r_req"], 1), span_req_max_A=round(lk["r_req_max"], 1),
         C_eff_mM=round(lk["ceff"] * 1e3, 4), dG_link=round(lk["dG_link"], 2),
-        eo_scan_at_bound=lk["at_bound"],
+        reaches_extended=lk["reaches_extended"], eo_scan_at_bound=lk["at_bound"],
         # 二価
         dG37_biv=round(dG_biv, 2), Tm_biv=round(tm_biv, 1),
         Kd_biv_nM=round(kd_biv * 1e9, 4),
@@ -831,7 +844,8 @@ MAIN_COLS = ["up_start", "up_end", "down_start", "down_end", "gap_nt",
              "dG_open_up", "dG_open_down", "dG_open_both",
              "dG_self_up", "dG_self_down", "dG_cross",
              "Tm_mono_up", "Tm_mono_down", "Kd_mono_up_uM", "Kd_mono_down_uM",
-             "n_EO", "n_EO_ceffmax", "linker_contour_A", "span_req_A", "C_eff_mM", "dG_link",
+             "n_EO", "n_EO_ceffmax", "linker_contour_A", "span_req_A", "reaches_extended",
+             "C_eff_mM", "dG_link",
              "dG37_biv", "Tm_biv", "Kd_biv_nM",
              "occ_biv", "occ_leak", "switch_log10", "func_score",
              "pass_targets", "score"]
@@ -954,7 +968,8 @@ def main():
         print(f"construct  : {r['construct']}")
         print(f"             PEG {r['n_EO']} units (contour {r['linker_contour_A']} A), "
               f"required span {r['span_req_A']} A "
-              f"(extended-gap upper bound {r['span_req_max_A']} A)")
+              f"(extended-gap upper bound {r['span_req_max_A']} A, "
+              f"{'reaches' if r['reaches_extended'] else 'DOES NOT reach'})")
         print(f"             C_eff = {r['C_eff_mM']} mM  ->  dG_avidity = {r['dG_link']} kcal/mol")
         print(f"monovalent : dG37 {r['dG37_mono_up']} / {r['dG37_mono_down']} kcal/mol, "
               f"Tm {r['Tm_mono_up']} / {r['Tm_mono_down']} C, "
