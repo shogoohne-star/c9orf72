@@ -760,6 +760,36 @@ SHOW = ["zone", "up_start", "up_end", "L_up", "gap_nt", "down_start", "down_end"
         "on_off_ceiling", "cov_element_nt", "score"]
 
 
+def eps_from_onoff(rec, R, lo=1e-4, hi=0.9999):
+    """
+    測定された ON/OFF (= R) から阻害効率 eps を逆算する。
+    実験後にこれを使って各ゾーンの eps を確定させ、次段の最適化の入力にする。
+    ON/OFF は eps に対して単調増加なので二分法でよい。
+    """
+    f = lambda e: predict_on_off(rec, eps_scale=e)["on_off"] - R
+    if f(lo) > 0:
+        return None            # R が小さすぎる (eps ~ 0 でも届かない)
+    if f(hi) < 0:
+        return None            # R が大きすぎる (占有率の方が律速)
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if f(mid) < 0:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def inverse_table(rec, measured=(1.5, 2, 3, 5, 10, 20, 50)):
+    rows = []
+    for R in measured:
+        e = eps_from_onoff(rec, R)
+        rows.append(dict(measured_on_off=R,
+                         implied_eps=round(e, 4) if e is not None else np.nan,
+                         note="" if e is not None else "この構築体では到達不能"))
+    return pd.DataFrame(rows)
+
+
 def eps_table(rec):
     out = []
     for e in CFG.EPS_SWEEP:
@@ -795,6 +825,11 @@ def detail(rec):
     for _, r in eps_table(rec).iterrows():
         print(f"      eps={r['eps']:<5} act_OFF={r['act_off']:<9.5f} "
               f"act_ON={r['act_on']:<9.5f} ON/OFF={r['on_off']:<8} (上限 {r['ceiling']})")
+    print("  逆引き (実験後: 測定した ON/OFF から eps を読む):")
+    for _, r in inverse_table(rec).iterrows():
+        e = r["implied_eps"]
+        print(f"      測定 ON/OFF = {r['measured_on_off']:<5} -> eps = "
+              f"{('%.3f' % e) if e == e else '---'}  {r['note']}")
 
 
 def order_sheet(picks):
@@ -828,6 +863,10 @@ def order_sheet(picks):
 
 
 def plots(all_df):
+    """
+    図のラベルは英語で書く。Colab には日本語フォントが入っておらず、
+    日本語を使うと字形が落ちて豆腐になるため。
+    """
     if not HAVE_PLT or all_df.empty:
         return
     zones = [z["name"] for z in CFG.ZONES if (all_df.zone == z["name"]).any()]
@@ -835,31 +874,41 @@ def plots(all_df):
     fig, axes = plt.subplots(1, len(zones), figsize=(5.2 * len(zones), 4.4), squeeze=False)
     for ax, zn in zip(axes[0], zones):
         d = all_df[all_df.zone == zn]
-        sc = ax.scatter(d["occ_on"], d["occ_off"], c=np.log10(d["on_off"].clip(1e-3, 1e6)),
-                        cmap="viridis", s=16)
+        sc = ax.scatter(d["occ_on"], d["occ_off"],
+                        c=np.log10(d["on_off"].clip(1e-3, 1e6)), cmap="viridis", s=16)
         ax.axhline(CFG.OCC_OFF_MIN, color="r", ls="--", lw=1)
         ax.axvline(CFG.OCC_ON_MAX, color="r", ls="--", lw=1)
         ax.set_xscale("log")
-        ax.set_xlabel("occupancy ON (post-cleavage, want low)")
+        ax.set_xlabel("occupancy ON, post-cleavage (want low)")
         ax.set_ylabel("occupancy OFF (want high)")
         ax.set_title(f"zone: {zn}  (n={len(d)})")
         fig.colorbar(sc, ax=ax, label="log10 ON/OFF")
     plt.tight_layout(); plt.show()
 
-    fig, ax = plt.subplots(figsize=(7.5, 4.6))
+    # --- 逆引き図: 測定 ON/OFF から eps を読む ---
+    fig, ax = plt.subplots(figsize=(7.8, 5.0))
+    es = np.linspace(0.05, 0.995, 120)
     for zn in zones:
         d = all_df[all_df.zone == zn].nlargest(1, "score")
         if d.empty:
             continue
         rec = d.iloc[0].to_dict()
-        es = np.linspace(0.3, 0.995, 40)
         ys = [predict_on_off(rec, eps_scale=e)["on_off"] for e in es]
-        ax.plot(es, ys, label=f"{zn} ({rec['up_start']}-{rec['up_end']}/"
-                              f"{rec['down_start']}-{rec['down_end']})")
-    ax.set_xlabel("blocking efficiency eps (実験で測る量)")
-    ax.set_ylabel("predicted ON/OFF")
-    ax.set_yscale("log"); ax.grid(alpha=.3); ax.legend(fontsize=8)
-    ax.set_title("ON/OFF は eps に強く依存する — 熱力学だけでは決まらない")
+        ax.plot(es, ys, lw=2,
+                label=f"{zn}  {rec['up_start']}-{rec['up_end']}/"
+                      f"{rec['down_start']}-{rec['down_end']}")
+    for R in (2, 5, 10, 20):
+        ax.axhline(R, color="grey", ls=":", lw=0.8)
+        ax.annotate(f"ON/OFF={R}", (0.06, R), fontsize=7, color="grey",
+                    va="bottom")
+    ax.set_xlabel("blocking efficiency  eps   (measured by THIS experiment)")
+    ax.set_ylabel("ON/OFF")
+    ax.set_yscale("log")
+    ax.grid(alpha=.3)
+    ax.legend(fontsize=8, loc="upper left")
+    ax.set_title("Inverse lookup: measured ON/OFF  ->  eps of that zone\n"
+                 "(curves overlap = the three constructs are thermodynamically "
+                 "equivalent,\n so any measured difference is eps, not binding)")
     plt.tight_layout(); plt.show()
 
 
