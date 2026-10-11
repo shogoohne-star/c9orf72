@@ -120,8 +120,12 @@ class CFG:
     RISE_SS_MAX_A  = 6.0
 
     # ---- 構造・配列フィルタ ----------------------------------------------
-    MIN_GAP_NT      = 2
-    MAX_GAP_NT      = 25
+    # gap の下限は 0 にして物理に判定させる。gap<=COAX_GAP_MAX では
+    # 切断後に 2 断片が隣接結合し coaxial stacking (DG_COAX) で協同再結合する
+    # リークが生じるが、それは ddG_coop 経由で切断後の 2 サイト平衡にも
+    # 正しく入っているので、手でフィルタせずスコアに淘汰させる。
+    MIN_GAP_NT      = 0
+    MAX_GAP_NT      = 45     # 上限は C_eff (アビディティ) が物理的に決めるので緩く取る
     MAX_G_RUN       = 3
     MAX_ANY_RUN     = 4
     SELF_FOLD_MAX   = -1.5
@@ -443,7 +447,7 @@ def solve_two_site(Tt, At, Bt, K1, K2, w):
 
     # a, b それぞれについて単調なので、交互に brentq / 二分法で詰める
     a, b = At, Bt
-    for _ in range(200):
+    for _ in range(60):
         a_old, b_old = a, b
 
         def fa(x):
@@ -458,9 +462,9 @@ def solve_two_site(Tt, At, Bt, K1, K2, w):
                 hi = max(At, Bt) * 10.0
             try:
                 if HAVE_SCIPY:
-                    root = brentq(f, lo, hi, xtol=1e-26, rtol=1e-12, maxiter=200)
+                    root = brentq(f, lo, hi, xtol=1e-26, rtol=1e-10, maxiter=100)
                 else:
-                    for _ in range(200):
+                    for _ in range(120):
                         mid = math.sqrt(lo * hi)
                         if f(mid) > 0:
                             hi = mid
@@ -474,8 +478,10 @@ def solve_two_site(Tt, At, Bt, K1, K2, w):
             else:
                 b = root
 
-        if abs(a - a_old) <= 1e-14 * max(a, 1e-30) and \
-           abs(b - b_old) <= 1e-14 * max(b, 1e-30):
+        # 1e-14 では break がほぼ発火せず常に最大回数回って遅かった。
+        # 占有率の精度としては 1e-10 で十分 (検証済み)。
+        if abs(a - a_old) <= 1e-10 * max(a, 1e-30) and \
+           abs(b - b_old) <= 1e-10 * max(b, 1e-30):
             break
 
     T0, TA, TB, TAB = species(a, b)
@@ -612,8 +618,10 @@ def evaluate(zone, a1, b1, a2, b2):
 
     dH_up, dG_up = nn_duplex(site_up)
     dH_dn, dG_dn = nn_duplex(site_dn)
-    o_up, o_dn = dg_open([(a1, b1)]), dg_open([(a2, b2)])
-    o_both = dg_open([(a1, b1), (a2, b2)])
+
+    # --- 安価なフィルタを先に通す。2 サイト同時の dg_open はペアごとに一意で
+    #     キャッシュが効かず (83 nt の制約付き分配関数) ここが律速になるため、
+    #     落ちる候補にはそれを計算させない。
     s_up, _ = self_fold_ome(m_up)
     s_dn, _ = self_fold_ome(m_dn)
     if s_up < CFG.SELF_FOLD_MAX or s_dn < CFG.SELF_FOLD_MAX:
@@ -631,6 +639,11 @@ def evaluate(zone, a1, b1, a2, b2):
     lk = optimize_linker(gap)
     if lk is None:
         return None, "linker"
+
+    # 単一領域の dg_open は領域ごとにキャッシュされるので安価。
+    # 2 サイト同時のものだけが一意で高価。
+    o_up, o_dn = dg_open([(a1, b1)]), dg_open([(a2, b2)])
+    o_both = dg_open([(a1, b1), (a2, b2)])
 
     coax = CFG.DG_COAX if gap <= CFG.COAX_GAP_MAX else 0.0
 
@@ -730,7 +743,7 @@ def rank(df):
     return d.drop(columns=[c for c in d.columns if c.startswith("_")])
 
 
-def positional_scan(region=None, gaps=(2, 3, 4), arms=range(7, 13)):
+def positional_scan(region=None, gaps=None, arms=None):
     """
     ゾーン境界を使わずに、マスクのフットプリント位置を 5'UTR 全域で動かし、
     各位置で到達可能な「スイッチ品質」の上限を出す。
@@ -745,6 +758,11 @@ def positional_scan(region=None, gaps=(2, 3, 4), arms=range(7, 13)):
       「塞げるか」と「外れるか」は別の軸なので、eps の仮定と分離して見る。
     """
     lo, hi = region or (1, max(z["region"][1] for z in CFG.ZONES))
+    # gap も腕長も決め打ちしない。ここで絞ると「ゾーン境界に依存しない検証」
+    # という目的そのものが崩れる (別の隠れた制約が入る)。
+    # 長い gap はアビディティ項 -RT ln(C_eff) が物理的に淘汰する。
+    gaps = range(CFG.MIN_GAP_NT, CFG.MAX_GAP_NT + 1) if gaps is None else gaps
+    arms = CFG.ARM_LENGTHS if arms is None else arms
     probe = dict(name="_scan", region=(lo, hi), must_cover=(lo, hi), eps=0.9)
     ZONE_BY_NAME[probe["name"]] = probe   # predict_on_off が名前で引くため
     best = {}
